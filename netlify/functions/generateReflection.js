@@ -1,10 +1,26 @@
 const fetch = require('node-fetch');
 
 exports.handler = async function(event, context) {
+  // Set CORS headers
+  const headers = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS'
+  };
+
+  // Handle preflight OPTIONS request
+  if (event.httpMethod === 'OPTIONS') {
+    return {
+      statusCode: 204,
+      headers
+    };
+  }
+
   // Only allow POST requests
   if (event.httpMethod !== 'POST') {
     return {
       statusCode: 405,
+      headers,
       body: JSON.stringify({ error: 'Method not allowed' })
     };
   }
@@ -17,6 +33,7 @@ exports.handler = async function(event, context) {
     if (!topic || !verses) {
       return {
         statusCode: 400,
+        headers,
         body: JSON.stringify({ error: 'Missing required fields: topic and verses' })
       };
     }
@@ -61,6 +78,7 @@ exports.handler = async function(event, context) {
     return {
       statusCode: 200,
       headers: {
+        ...headers,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
@@ -72,6 +90,10 @@ exports.handler = async function(event, context) {
     console.error('Function error:', error);
     return {
       statusCode: 500,
+      headers: {
+        ...headers,
+        'Content-Type': 'application/json'
+      },
       body: JSON.stringify({
         error: 'Failed to generate reflection',
         message: error.message

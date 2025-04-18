@@ -5,5 +5,11 @@
   "main": "index.html",
   "dependencies": {
     "node-fetch": "^2.6.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "netlify dev"
   }
 }
