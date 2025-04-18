@@ -1,0 +1,9 @@
+{
+  "name": "bible-reflection",
+  "version": "1.0.0",
+  "description": "Bible reflection and prayer generator",
+  "main": "index.html",
+  "dependencies": {
+    "node-fetch": "^2.6.1"
+  }
+}
