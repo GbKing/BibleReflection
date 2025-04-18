@@ -153,47 +153,29 @@
         </div>
     </div>
 
-    <script src="config.js"></script>
     <script>
         async function generateReflectionAndPrayer(topic, verses) {
             const reflectionDiv = document.getElementById('reflection');
             reflectionDiv.innerHTML = '<h2>Reflection & Prayer</h2><p class="loading">Generating reflection and prayer...</p>';
 
             try {
-                const versesText = verses.map(verse => `${verse.reference}: ${verse.text}`).join('\n');
-                
-                const response = await fetch('https://api.openai.com/v1/chat/completions', {
+                const response = await fetch('/api/generateReflection', {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${config.openaiApiKey}`
+                        'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({
-                        model: "gpt-3.5-turbo",
-                        messages: [
-                            {
-                                role: "system",
-                                content: "You are a Christian devotional writer. You help believers reflect on Scripture with biblical insight and heartfelt encouragement."
-                            },
-                            {
-                                role: "user",
-                                content: `Write a short devotional reflection and a short prayer on the topic of ${topic}. Use the following Bible verses:\n\n${versesText}`
-                            }
-                        ],
-                        temperature: 0.7
-                    })
+                    body: JSON.stringify({ topic, verses })
                 });
 
                 if (!response.ok) {
-                    throw new Error('Failed to generate reflection');
+                    const error = await response.json();
+                    throw new Error(error.message || 'Failed to generate reflection');
                 }
 
                 const data = await response.json();
-                const reflection = data.choices[0].message.content;
-
                 reflectionDiv.innerHTML = `
                     <h2>Reflection & Prayer</h2>
-                    <div class="reflection-content">${reflection.replace(/\n/g, '<br>')}</div>
+                    <div class="reflection-content">${data.result.replace(/\n/g, '<br>')}</div>
                 `;
             } catch (error) {
                 reflectionDiv.innerHTML = `
