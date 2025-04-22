@@ -179,6 +179,8 @@
             reflectionDiv.innerHTML = '<h2>Reflection & Prayer</h2><p class="loading">Generating reflection and prayer...</p>';
 
             try {
+                console.log('Sending verses for reflection:', verses.length);
+                
                 const response = await fetch('/api/generateReflection', {
                     method: 'POST',
                     headers: {
@@ -192,11 +194,17 @@
                 });
 
                 if (!response.ok) {
-                    const error = await response.json();
-                    throw new Error(error.message || 'Failed to generate reflection');
+                    const errorData = await response.json();
+                    console.error('Server error response:', errorData);
+                    throw new Error(errorData.message || 'Failed to generate reflection');
                 }
 
                 const data = await response.json();
+                
+                if (!data || !data.result) {
+                    throw new Error('Invalid response format');
+                }
+                
                 reflectionDiv.innerHTML = `
                     <h2>Reflection & Prayer</h2>
                     <div class="reflection-content">${data.result.replace(/\n/g, '<br>')}</div>

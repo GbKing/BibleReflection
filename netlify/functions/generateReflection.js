@@ -167,47 +167,119 @@ For concepts or topics, include verses that directly address or illustrate the t
 }
 
 async function handleReflectionGeneration(topic, verses, headers) {
-  const versesText = Array.isArray(verses) 
-    ? verses.map(v => `${v.reference}: ${v.text}`).join('\n')
-    : verses;
+  try {
+    // Validate input
+    if (!topic || typeof topic !== 'string') {
+      throw new Error('Invalid topic provided');
+    }
+    
+    if (!verses || (!Array.isArray(verses) && typeof verses !== 'string')) {
+      throw new Error('Invalid verses data provided');
+    }
+    
+    // Limit number of verses to prevent token limit issues (max 10 verses)
+    let versesToUse = verses;
+    if (Array.isArray(verses) && verses.length > 10) {
+      console.log(`Limiting from ${verses.length} verses to 10 verses to prevent token limit issues`);
+      versesToUse = verses.slice(0, 10);
+    }
 
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: "gpt-4-turbo",
-      messages: [
-        {
-          role: "system",
-          content: "You are a Christian devotional writer. Write biblically faithful reflections and prayers."
-        },
-        {
-          role: "user",
-          content: `Write a devotional reflection and a short prayer on the topic of ${topic}. Use these verses:\n\n${versesText}`
-        }
-      ],
-      temperature: 0.7
-    })
-  });
+    const versesText = Array.isArray(versesToUse) 
+      ? versesToUse.map(v => {
+          if (!v || !v.reference || !v.text) {
+            console.warn('Invalid verse object found:', v);
+            return '';
+          }
+          return `${v.reference}: ${v.text}`;
+        }).filter(Boolean).join('\n')
+      : versesToUse;
 
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.error?.message || 'Failed to generate reflection');
+    if (!versesText.trim()) {
+      throw new Error('No valid verse text available');
+    }
+
+    console.log('Generating reflection for topic:', topic);
+    console.log('Using verses count:', Array.isArray(versesToUse) ? versesToUse.length : 'text input');
+    console.log('First verse sample:', versesText.split('\n')[0]);
+
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: "gpt-4-turbo",
+        messages: [
+          {
+            role: "system",
+            content: `You are a Christian devotional writer with deep theological understanding and a gift for reflection. 
+Your goal is to create profound, thoughtful reflections on spiritual topics that engage the reader in meaningful contemplation.
+Your reflections should be original, insightful, and thought-provoking, not merely explanations of Bible verses.
+Include scriptural references naturally within your writing, but don't simply explain the verses.
+End with a heartfelt prayer that relates to the topic and the spiritual journey of the reader.`
+          },
+          {
+            role: "user",
+            content: `Write a deep, thoughtful Christian reflection on the topic of "${topic}". 
+            
+Some relevant scriptures for this topic include:
+
+${versesText}
+
+However, don't simply explain these verses. Instead, provide a robust, contemplative reflection on the topic itself. 
+Consider theological implications, personal application, and spiritual growth. 
+The reflection should be profound and insightful, drawing on biblical wisdom but not limited to only the verses listed.
+End with a meaningful prayer related to this topic.`
+          }
+        ],
+        temperature: 0.7
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('OpenAI API error response:', errorText);
+      
+      try {
+        const error = JSON.parse(errorText);
+        throw new Error(error.error?.message || 'Failed to generate reflection');
+      } catch (parseError) {
+        throw new Error(`Failed to generate reflection: HTTP ${response.status} - ${errorText.substring(0, 200)}`);
+      }
+    }
+
+    const data = await response.json();
+    
+    if (!data || !data.choices || !data.choices[0] || !data.choices[0].message || !data.choices[0].message.content) {
+      console.error('Invalid OpenAI response format:', data);
+      throw new Error('Invalid response from OpenAI API');
+    }
+    
+    console.log('Reflection generated successfully');
+    
+    return {
+      statusCode: 200,
+      headers: {
+        ...headers,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        result: data.choices[0].message.content
+      })
+    };
+  } catch (error) {
+    console.error('Reflection generation error:', error);
+    return {
+      statusCode: 500,
+      headers: {
+        ...headers,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        error: 'Failed to generate reflection',
+        message: error.message
+      })
+    };
   }
-
-  const data = await response.json();
-  
-  return {
-    statusCode: 200,
-    headers: {
-      ...headers,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      result: data.choices[0].message.content
-    })
-  };
 }
