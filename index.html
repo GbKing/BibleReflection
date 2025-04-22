@@ -136,7 +136,7 @@
         <h1>Bible Reflection</h1>
         
         <div class="search-container">
-            <input type="text" id="topic" placeholder="Enter a topic (e.g., faith, hope, love)">
+            <input type="text" id="topic" placeholder="Enter any topic, book, or character from the Bible">
             <button id="findScriptures">Find Scriptures</button>
         </div>
 
@@ -154,6 +154,26 @@
     </div>
 
     <script>
+        async function findBibleVerses(query) {
+            const response = await fetch('/api/generateReflection', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ 
+                    query,
+                    type: 'SEARCH_VERSES'
+                })
+            });
+
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.message || 'Failed to find verses');
+            }
+
+            return response.json();
+        }
+
         async function generateReflectionAndPrayer(topic, verses) {
             const reflectionDiv = document.getElementById('reflection');
             reflectionDiv.innerHTML = '<h2>Reflection & Prayer</h2><p class="loading">Generating reflection and prayer...</p>';
@@ -164,7 +184,11 @@
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ topic, verses })
+                    body: JSON.stringify({ 
+                        topic, 
+                        verses,
+                        type: 'GENERATE_REFLECTION'
+                    })
                 });
 
                 if (!response.ok) {
@@ -192,113 +216,27 @@
         document.getElementById('findScriptures').addEventListener('click', async function() {
             const scripturesDiv = document.getElementById('scriptures');
             const button = this;
-            const topic = document.getElementById('topic').value.trim();
+            const query = document.getElementById('topic').value.trim();
 
-            if (!topic) {
-                alert('Please enter a topic');
+            if (!query) {
+                alert('Please enter a topic, book, or character from the Bible');
                 return;
             }
 
             // Disable button and show loading state
             button.disabled = true;
-            scripturesDiv.innerHTML = '<h2>Scriptures</h2><p class="loading">Loading verses for "' + topic + '"...</p>';
+            scripturesDiv.innerHTML = '<h2>Scriptures</h2><p class="loading">Finding verses about "' + query + '"...</p>';
 
             try {
-                // Format topic for URL (replace spaces with underscores)
-                const formattedTopic = topic.toLowerCase().replace(/\s+/g, '_');
-                const targetUrl = `https://www.openbible.info/topics/${formattedTopic}`;
-                const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`;
-
-                const response = await fetch(proxyUrl);
-                if (!response.ok) throw new Error('Failed to fetch verses');
-
-                const html = await response.text();
-                const parser = new DOMParser();
-                const doc = parser.parseFromString(html, 'text/html');
-
-                // Try different selectors that might contain verses
-                let verseElements = doc.querySelectorAll('.verse, .topic-results li, .results li, .results p');
+                const result = await findBibleVerses(query);
                 
-                // If no verses found with specific selectors, try a more general approach
-                if (verseElements.length === 0) {
-                    verseElements = Array.from(doc.getElementsByTagName('p')).filter(p => {
-                        const text = p.textContent;
-                        // Look for patterns that typically appear in Bible verses (e.g., "Book Chapter:Verse")
-                        return /[A-Za-z]+\s*\d+:\d+/.test(text);
-                    });
+                if (!result.verses || result.verses.length === 0) {
+                    throw new Error('No verses found');
                 }
 
-                const verses = Array.from(verseElements)
-                    .slice(0, 7) // Get top 7 verses
-                    .map(element => {
-                        // Clean and format the verse text
-                        let text = element.textContent.trim()
-                            .replace(/\s+/g, ' ') // Normalize whitespace
-                            .replace(/^[0-9]+\.\s*/, '') // Remove leading numbers
-                            .replace(/\([^)]*\)/g, '') // Remove parenthetical content
-                            .trim();
-
-                        // More aggressive cleaning of metadata and votes
-                        text = text
-                            .replace(/\b(?:ESV|NIV|KJV|NASB|NLT|MSG|NKJV)\b\s*\/[^/]+\/\s*/g, '') // Remove translation indicators
-                            .replace(/\d+(?:,\d+)?\s+helpful votes?/gi, '') // Remove vote counts
-                            .replace(/Helpful\s+Not\s+Helpful\s*/g, '') // Remove "Helpful Not Helpful" text
-                            .trim();
-
-                        // Try to match different verse reference patterns
-                        const patterns = [
-                            /^((?:[1-3]\s+)?[A-Za-z]+\s+\d+:\d+(?:-\d+)?)\s*(.+)$/, // Standard format
-                            /(.+)\s+((?:[1-3]\s+)?[A-Za-z]+\s+\d+:\d+(?:-\d+)?)$/, // Reversed format
-                        ];
-
-                        for (const pattern of patterns) {
-                            const match = text.match(pattern);
-                            if (match) {
-                                // Clean up both reference and text parts
-                                const reference = match[1].trim();
-                                const verseText = match[2] ? match[2].trim()
-                                    .replace(/^[^a-zA-Z]*/, '') // Remove leading non-letter characters
-                                    .replace(/Helpful\s+Not\s+Helpful\s*/g, '') // Clean up again in case it appears in the verse text
-                                    .trim() : match[1].trim();
-
-                                return {
-                                    reference: reference,
-                                    text: verseText
-                                };
-                            }
-                        }
-
-                        // If no pattern matches, try to find any Bible reference
-                        const referenceMatch = text.match(/((?:[1-3]\s+)?[A-Za-z]+\s+\d+:\d+(?:-\d+)?)/);
-                        if (referenceMatch) {
-                            const reference = referenceMatch[1];
-                            let verseText = text.replace(reference, '').trim();
-                            
-                            // Clean up the verse text one more time
-                            verseText = verseText
-                                .replace(/^[^a-zA-Z]*/, '') // Remove leading non-letter characters
-                                .replace(/Helpful\s+Not\s+Helpful\s*/g, '') // Clean up again
-                                .replace(/\s+/g, ' ') // Normalize spaces
-                                .trim();
-
-                            return {
-                                reference: reference,
-                                text: verseText || text
-                            };
-                        }
-
-                        return null;
-                    })
-                    .filter(verse => verse !== null && verse.text.length > 0); // Only keep verses with actual content
-
-                if (verses.length === 0) {
-                    throw new Error('No verses found for this topic. The website structure might have changed.');
-                }
-
-                // Display the verses
                 scripturesDiv.innerHTML = `
-                    <h2>Scriptures about "${topic}"</h2>
-                    ${verses.map(verse => `
+                    <h2>Scriptures about "${query}"</h2>
+                    ${result.verses.map(verse => `
                         <div class="verse">
                             <div class="verse-reference">${verse.reference}</div>
                             <div class="verse-text">${verse.text}</div>
@@ -307,39 +245,16 @@
                 `;
 
                 // Generate reflection and prayer after displaying verses
-                await generateReflectionAndPrayer(topic, verses);
+                await generateReflectionAndPrayer(query, result.verses);
 
             } catch (error) {
                 scripturesDiv.innerHTML = `
                     <h2>Scriptures</h2>
                     <div class="error">
-                        <p>Sorry, we couldn't find any verses for "${topic}". Let's try using a different Bible API.</p>
+                        <p>Sorry, we couldn't find any verses for "${query}".</p>
                         <p>Error: ${error.message}</p>
                     </div>
                 `;
-                
-                // Try an alternative API
-                try {
-                    const response = await fetch(`https://bible-api.com/search=${encodeURIComponent(topic)}`);
-                    if (!response.ok) throw new Error('Failed to fetch from alternative API');
-                    
-                    const data = await response.json();
-                    if (data.verses && data.verses.length > 0) {
-                        const verses = data.verses.slice(0, 7);
-                        
-                        scripturesDiv.innerHTML = `
-                            <h2>Scriptures about "${topic}"</h2>
-                            ${verses.map(verse => `
-                                <div class="verse">
-                                    <div class="verse-reference">${verse.reference}</div>
-                                    <div class="verse-text">${verse.text}</div>
-                                </div>
-                            `).join('')}
-                        `;
-                    }
-                } catch (secondError) {
-                    // If both APIs fail, keep the original error message
-                }
             } finally {
                 button.disabled = false;
             }

@@ -11,5 +11,8 @@
   },
   "scripts": {
     "start": "netlify dev"
+  },
+  "devDependencies": {
+    "netlify-cli": "^20.0.2"
   }
 }
