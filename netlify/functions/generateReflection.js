@@ -2,7 +2,7 @@ const fetch = require('node-fetch');
 
 /**
  * Netlify serverless function that:
- * 1. Uses GPT-3.5-turbo to find relevant Bible verses for any topic, book, or character
+ * 1. Uses GPT-4-turbo to find relevant Bible verses for any topic, book, or character
  * 2. Generates a Christian devotional reflection and prayer based on those verses
  * 
  * Expected POST body format for verse search:
@@ -79,11 +79,11 @@ async function handleVerseSearch(query, headers) {
         'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
       },
       body: JSON.stringify({
-        model: "gpt-3.5-turbo",
+        model: "gpt-4-turbo",
         messages: [
           {
             role: "system",
-            content: `You are a Bible scholar helping find relevant Bible verses. For any query (topic, book, character, event, or concept), return 3-5 relevant verses.
+            content: `You are a Bible scholar helping find relevant Bible verses. For any query (topic, book, character, event, or concept), return at least 5 relevant verses.
 
 IMPORTANT: You must respond with valid JSON in exactly this format, with no additional text before or after:
 {
@@ -178,7 +178,7 @@ async function handleReflectionGeneration(topic, verses, headers) {
       'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
     },
     body: JSON.stringify({
-      model: "gpt-3.5-turbo",
+      model: "gpt-4-turbo",
       messages: [
         {
           role: "system",
