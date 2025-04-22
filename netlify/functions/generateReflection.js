@@ -201,28 +201,24 @@ async function handleReflectionGeneration(topic, verses, headers) {
     console.log('Generating reflection for topic:', topic);
     console.log('Using verses count:', Array.isArray(versesToUse) ? versesToUse.length : 'text input');
     console.log('First verse sample:', versesText.split('\n')[0]);
+    console.log('API Key defined:', !!process.env.OPENAI_API_KEY);
 
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: "gpt-4-turbo",
-        messages: [
-          {
-            role: "system",
-            content: `You are a Christian devotional writer with deep theological understanding and a gift for reflection. 
+    // Prepare API request
+    const requestBody = {
+      model: "gpt-4-turbo",
+      messages: [
+        {
+          role: "system",
+          content: `You are a Christian devotional writer with deep theological understanding and a gift for reflection. 
 Your goal is to create profound, thoughtful reflections on spiritual topics that engage the reader in meaningful contemplation.
 Your reflections should be original, insightful, and thought-provoking, not merely explanations of Bible verses.
 Include scriptural references naturally within your writing, but don't simply explain the verses.
 End with a heartfelt prayer that relates to the topic and the spiritual journey of the reader.`
-          },
-          {
-            role: "user",
-            content: `Write a deep, thoughtful Christian reflection on the topic of "${topic}". 
-            
+        },
+        {
+          role: "user",
+          content: `Write a deep, thoughtful Christian reflection on the topic of "${topic}". 
+          
 Some relevant scriptures for this topic include:
 
 ${versesText}
@@ -231,19 +227,31 @@ However, don't simply explain these verses. Instead, provide a robust, contempla
 Consider theological implications, personal application, and spiritual growth. 
 The reflection should be profound and insightful, drawing on biblical wisdom but not limited to only the verses listed.
 End with a meaningful prayer related to this topic.`
-          }
-        ],
-        temperature: 0.7
-      })
+        }
+      ],
+      temperature: 0.7
+    };
+    
+    console.log('Request prepared, sending to OpenAI API');
+    
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+      },
+      body: JSON.stringify(requestBody)
     });
 
     if (!response.ok) {
       const errorText = await response.text();
       console.error('OpenAI API error response:', errorText);
+      console.error('Response status:', response.status);
+      console.error('Response headers:', JSON.stringify([...response.headers.entries()]));
       
       try {
         const error = JSON.parse(errorText);
-        throw new Error(error.error?.message || 'Failed to generate reflection');
+        throw new Error(error.error?.message || `OpenAI API error: HTTP ${response.status}`);
       } catch (parseError) {
         throw new Error(`Failed to generate reflection: HTTP ${response.status} - ${errorText.substring(0, 200)}`);
       }
@@ -269,7 +277,8 @@ End with a meaningful prayer related to this topic.`
       })
     };
   } catch (error) {
-    console.error('Reflection generation error:', error);
+    console.error('Reflection generation error:', error.message);
+    console.error('Error stack:', error.stack);
     return {
       statusCode: 500,
       headers: {
@@ -278,7 +287,8 @@ End with a meaningful prayer related to this topic.`
       },
       body: JSON.stringify({
         error: 'Failed to generate reflection',
-        message: error.message
+        message: error.message,
+        details: process.env.NODE_ENV !== 'production' ? error.stack : undefined
       })
     };
   }

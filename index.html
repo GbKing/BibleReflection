@@ -181,34 +181,124 @@
             try {
                 console.log('Sending verses for reflection:', verses.length);
                 
-                const response = await fetch('/api/generateReflection', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ 
-                        topic, 
-                        verses,
-                        type: 'GENERATE_REFLECTION'
-                    })
-                });
-
-                if (!response.ok) {
-                    const errorData = await response.json();
-                    console.error('Server error response:', errorData);
-                    throw new Error(errorData.message || 'Failed to generate reflection');
-                }
-
-                const data = await response.json();
+                // Determine if we're running locally or on Netlify
+                const isLocal = window.location.hostname === 'localhost' || 
+                                window.location.hostname === '127.0.0.1';
                 
-                if (!data || !data.result) {
-                    throw new Error('Invalid response format');
+                if (isLocal) {
+                    // Use the original direct approach for local development
+                    const response = await fetch('/api/generateReflection', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ 
+                            topic, 
+                            verses,
+                            type: 'GENERATE_REFLECTION'
+                        })
+                    });
+
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        console.error('Server error response:', errorData);
+                        throw new Error(errorData.message || 'Failed to generate reflection');
+                    }
+
+                    const data = await response.json();
+                    
+                    if (!data || !data.result) {
+                        throw new Error('Invalid response format');
+                    }
+                    
+                    reflectionDiv.innerHTML = `
+                        <h2>Reflection & Prayer</h2>
+                        <div class="reflection-content">${data.result.replace(/\n/g, '<br>')}</div>
+                    `;
+                } else {
+                    // Use the new asynchronous approach for production
+                    // Start the reflection generation process
+                    const startResponse = await fetch('/api/reflectionStatus', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ 
+                            topic, 
+                            verses
+                        })
+                    });
+
+                    if (!startResponse.ok) {
+                        const errorData = await startResponse.json();
+                        throw new Error(errorData.message || 'Failed to start reflection generation');
+                    }
+
+                    const startData = await startResponse.json();
+                    const reflectionId = startData.id;
+                    
+                    // Set up polling to check status
+                    let attempts = 0;
+                    const maxAttempts = 30;  // 30 seconds of polling at 1s intervals
+                    
+                    const checkStatus = async () => {
+                        attempts++;
+                        
+                        if (attempts > maxAttempts) {
+                            throw new Error('Reflection generation is taking longer than expected. Please try again.');
+                        }
+                        
+                        const statusResponse = await fetch(`/api/reflectionStatus?id=${reflectionId}`, {
+                            method: 'GET',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            }
+                        });
+                        
+                        if (!statusResponse.ok) {
+                            throw new Error('Failed to check reflection status');
+                        }
+                        
+                        const statusData = await statusResponse.json();
+                        
+                        if (statusData.status === 'completed' && statusData.result) {
+                            // Reflection is ready
+                            reflectionDiv.innerHTML = `
+                                <h2>Reflection & Prayer</h2>
+                                <div class="reflection-content">${statusData.result.replace(/\n/g, '<br>')}</div>
+                            `;
+                            return true;
+                        } else if (statusData.status === 'error') {
+                            // Reflection generation failed
+                            throw new Error(statusData.error || 'Failed to generate reflection');
+                        } else {
+                            // Still processing, update message based on time spent
+                            const dots = '.'.repeat((attempts % 3) + 1);
+                            reflectionDiv.innerHTML = `<h2>Reflection & Prayer</h2><p class="loading">Generating reflection and prayer${dots}</p>`;
+                            
+                            // Continue polling
+                            return false;
+                        }
+                    };
+                    
+                    // Start polling
+                    return new Promise((resolve, reject) => {
+                        const poll = async () => {
+                            try {
+                                const done = await checkStatus();
+                                if (done) {
+                                    resolve();
+                                } else {
+                                    setTimeout(poll, 1000); // Check every second
+                                }
+                            } catch (error) {
+                                reject(error);
+                            }
+                        };
+                        
+                        poll();
+                    });
                 }
-                
-                reflectionDiv.innerHTML = `
-                    <h2>Reflection & Prayer</h2>
-                    <div class="reflection-content">${data.result.replace(/\n/g, '<br>')}</div>
-                `;
             } catch (error) {
                 reflectionDiv.innerHTML = `
                     <h2>Reflection & Prayer</h2>

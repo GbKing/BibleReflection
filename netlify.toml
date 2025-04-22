@@ -6,3 +6,9 @@
   from = "/api/*"
   to = "/.netlify/functions/:splat"
   status = 200
+
+[functions]
+  node_bundler = "esbuild"
+  # Increase timeout to 26 seconds (maximum allowed by Netlify)
+  external_node_modules = ["node-fetch"]
+  included_files = ["config.js"]
