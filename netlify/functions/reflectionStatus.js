@@ -1,8 +1,8 @@
 const fetch = require('node-fetch');
 
 // In-memory storage for reflection generation status
-// In a production app, you'd use a proper database or cache service
-const reflectionStore = {};
+// Use a more unique name to prevent conflicts with other functions
+const REFLECTION_STORE = {};
 
 exports.handler = async function(event, context) {
   // Set CORS headers
@@ -33,7 +33,7 @@ exports.handler = async function(event, context) {
       const reflectionId = generateUniqueId();
       
       // Store initial status
-      reflectionStore[reflectionId] = {
+      REFLECTION_STORE[reflectionId] = {
         status: 'pending',
         started: new Date().toISOString(),
         result: null,
@@ -73,7 +73,7 @@ exports.handler = async function(event, context) {
     try {
       const reflectionId = event.queryStringParameters?.id;
       
-      if (!reflectionId || !reflectionStore[reflectionId]) {
+      if (!reflectionId || !REFLECTION_STORE[reflectionId]) {
         return {
           statusCode: 404,
           headers: {
@@ -87,7 +87,7 @@ exports.handler = async function(event, context) {
         };
       }
       
-      const reflection = reflectionStore[reflectionId];
+      const reflection = REFLECTION_STORE[reflectionId];
       
       // If it's completed, we can delete from the store after sending
       const shouldDelete = ['completed', 'error'].includes(reflection.status);
@@ -103,7 +103,7 @@ exports.handler = async function(event, context) {
       // Clean up old entries (in real app, use proper TTL mechanism)
       if (shouldDelete) {
         setTimeout(() => {
-          delete reflectionStore[reflectionId];
+          delete REFLECTION_STORE[reflectionId];
         }, 60000); // Delete after 1 minute
       }
       
@@ -207,9 +207,9 @@ End with a meaningful prayer related to this topic.`
     }
     
     // Update store with completed result
-    reflectionStore[id] = {
+    REFLECTION_STORE[id] = {
       status: 'completed',
-      started: reflectionStore[id].started,
+      started: REFLECTION_STORE[id].started,
       completed: new Date().toISOString(),
       result: data.choices[0].message.content,
       error: null
@@ -217,9 +217,9 @@ End with a meaningful prayer related to this topic.`
     
   } catch (error) {
     // Update store with error
-    reflectionStore[id] = {
+    REFLECTION_STORE[id] = {
       status: 'error',
-      started: reflectionStore[id].started,
+      started: REFLECTION_STORE[id].started,
       completed: new Date().toISOString(),
       result: null,
       error: error.message

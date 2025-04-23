@@ -155,6 +155,7 @@
 
     <script>
         async function findBibleVerses(query) {
+            // Always include the type parameter for the Scripture search
             const response = await fetch('/api/generateReflection', {
                 method: 'POST',
                 headers: {
