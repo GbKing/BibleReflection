@@ -153,11 +153,6 @@ exports.handler = async function(event, context) {
   }
 };
 
-async function handleReflectionGeneration(topic, verses, headers) {
-  // Simply call the existing generateReflection function
-  return await generateReflection(verses, topic, headers);
-}
-
 async function handleVerseSearch(query, headers) {
   try {
     console.log('Starting verse search for query:', query);
@@ -331,6 +326,7 @@ For example:
 4. When responding to questions about specific Bible stories, include key verses that tell that story
 5. Include a diverse selection of verses from both Old and New Testaments when appropriate
 6. For personal struggles or life questions, include encouraging and hopeful verses
+7. If the query is about a biblical character (like Peter, Paul, Mary, etc.), include verses that feature them prominently
 
 Your response must be in JSON format with this structure:
 {
@@ -343,7 +339,7 @@ Your response must be in JSON format with this structure:
   ]
 }
 
-Always verify that your verse references are accurate and the text matches the actual Bible verse.`
+Always verify that your verse references are accurate and the text matches the actual Bible verse. Make sure to structure your response as proper JSON - this is critical.`
               },
               {
                 role: "user",
@@ -353,7 +349,7 @@ Always verify that your verse references are accurate and the text matches the a
             temperature: 0.3,
             response_format: { type: "json_object" } // Ensure JSON format
           }),
-          timeout: 20000 // 20 second timeout
+          timeout: 25000 // Increased from 20000 to 25000 for more time to process
         });
         
         // Handle response status
@@ -465,30 +461,280 @@ Always verify that your verse references are accurate and the text matches the a
   }
 }
 
+async function generateReflection(verses, query, headers) {
+  try {
+    console.log('Generating reflection for:', query);
+    console.log('Using verses:', JSON.stringify(verses));
+    
+    // Set up retry parameters
+    const maxRetries = 3;
+    let retryCount = 0;
+    let retryDelay = 2000; // Start with 2 seconds delay
+    
+    let response;
+    let data;
+    
+    // Compose verses string for the prompt
+    const versesText = verses
+      .map(verse => `${verse.reference}: "${verse.text}"`)
+      .join('\n\n');
+    
+    // Retry loop for handling API errors
+    while (retryCount <= maxRetries) {
+      try {
+        response = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+          },
+          body: JSON.stringify({
+            model: "gpt-4-turbo",
+            messages: [
+              {
+                role: "system",
+                content: `You are a thoughtful Christian devotional writer who creates reflections based on Bible verses. Your reflections should:
+
+1. Connect the verses to the question or topic provided
+2. Offer spiritual insights and practical applications
+3. Include encouraging and hopeful messages
+4. Avoid overly theological language in favor of accessible insights
+5. Be respectful of diverse Christian backgrounds and traditions
+6. Provide guidance without being overly prescriptive
+
+Your reflection should be structured as:
+
+1. A brief introduction (1-2 sentences)
+2. Main insights from the verses (2-3 paragraphs)
+3. Practical application (1-2 paragraphs)
+4. A closing thought or prayer (1-2 sentences)
+
+The total reflection should be about 300-500 words.
+
+Respond with a JSON object with this structure:
+{
+  "title": "A thoughtful title for this reflection",
+  "reflection": "The full reflection text with proper paragraphs",
+  "prayerPrompt": "A brief 1-2 sentence prayer prompt related to the reflection"
+}`
+              },
+              {
+                role: "user",
+                content: `Topic: "${query}"
+
+Verses to reflect on:
+${versesText}
+
+Please create a thoughtful reflection based on these verses that addresses the topic.`
+              }
+            ],
+            temperature: 0.7,
+            response_format: { type: "json_object" } // Ensure JSON format
+          }),
+          timeout: 25000 // 25 second timeout
+        });
+        
+        // Handle response status
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`OpenAI API error (${response.status}):`, errorText);
+          
+          if (response.status === 429) {
+            console.log(`Rate limited by OpenAI API. Attempt ${retryCount + 1} of ${maxRetries + 1}`);
+            retryCount++;
+            if (retryCount <= maxRetries) {
+              await new Promise(resolve => setTimeout(resolve, retryDelay));
+              retryDelay *= 2;
+              continue;
+            }
+          }
+          
+          throw new Error(`OpenAI API error: ${response.status} ${errorText}`);
+        }
+        
+        // Get the response text
+        const responseText = await response.text();
+        
+        try {
+          // Parse the response in a try/catch to handle malformed JSON
+          data = JSON.parse(responseText);
+        } catch (jsonError) {
+          console.error('Failed to parse OpenAI response as JSON:', responseText.substring(0, 200));
+          throw new Error('Invalid response format from OpenAI API');
+        }
+        
+        break; // Success, exit the retry loop
+        
+      } catch (err) {
+        console.error(`API request attempt ${retryCount + 1} failed:`, err);
+        
+        retryCount++;
+        
+        if (retryCount > maxRetries) {
+          throw err;
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, retryDelay));
+        retryDelay *= 2;
+      }
+    }
+    
+    // Validate the data structure
+    if (!data || !data.choices || !data.choices[0] || !data.choices[0].message || !data.choices[0].message.content) {
+      console.error('Invalid response structure from OpenAI API:', JSON.stringify(data));
+      throw new Error('Invalid response from AI service');
+    }
+    
+    // Parse the content as JSON
+    let reflection;
+    try {
+      reflection = JSON.parse(data.choices[0].message.content);
+    } catch (jsonError) {
+      console.error('Failed to parse reflection content as JSON:', data.choices[0].message.content);
+      
+      // Attempt to extract the main components from the text response
+      const content = data.choices[0].message.content;
+      
+      try {
+        // Extract title, reflection text, and prayer prompt with regex
+        const titleMatch = content.match(/title["\s:]*([^"]+)/i);
+        const reflectionMatch = content.match(/reflection["\s:]*([^"]+)/i) || 
+                               content.match(/\n\n([\s\S]+?)(\n\n|$)/);
+        const prayerMatch = content.match(/prayer["\s:]*([^"]+)/i);
+        
+        reflection = {
+          title: titleMatch ? titleMatch[1].trim() : 'Reflection on ' + query,
+          reflection: reflectionMatch ? reflectionMatch[1].trim() : content,
+          prayerPrompt: prayerMatch ? prayerMatch[1].trim() : 'Lord, guide me through this reflection.'
+        };
+      } catch (extractError) {
+        console.error('Failed to extract reflection components:', extractError);
+        throw new Error('Failed to parse reflection from response');
+      }
+    }
+    
+    // Ensure all required fields are present
+    if (!reflection.title || !reflection.reflection || !reflection.prayerPrompt) {
+      console.error('Missing required fields in reflection:', reflection);
+      
+      // Set defaults for any missing fields
+      reflection = {
+        title: reflection.title || `Reflection on ${query}`,
+        reflection: reflection.reflection || 'Unable to generate a complete reflection. Please try again later.',
+        prayerPrompt: reflection.prayerPrompt || 'Lord, guide me in understanding your Word.'
+      };
+    }
+    
+    console.log('Successfully generated reflection with title:', reflection.title);
+    
+    // Return the reflection with the original verses
+    return {
+      statusCode: 200,
+      headers: {
+        ...headers,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        ...reflection,
+        verses
+      })
+    };
+
+  } catch (error) {
+    console.error('Reflection generation error:', error);
+    return {
+      statusCode: 500,
+      headers: {
+        ...headers,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        error: 'Reflection generation failed',
+        message: error.message || 'An error occurred while generating the reflection'
+      })
+    };
+  }
+}
+
 // Helper function to extract verses from text when JSON parsing fails
 function extractVersesFromText(text) {
   const verses = [];
+  console.log('Extracting verses from text, length:', text.length);
   
-  // Try to find patterns like "John 3:16" followed by verse text
-  const referencePattern = /["']?([1-3]?\s?[A-Za-z]+\s+\d+:\d+(?:-\d+)?)["']?/g;
-  const matches = text.matchAll(referencePattern);
+  // First, try to find anything that looks like a JSON array of verses
+  try {
+    const jsonArrayMatch = text.match(/\[\s*\{[^]*\}\s*\]/);
+    if (jsonArrayMatch) {
+      const jsonArray = jsonArrayMatch[0];
+      console.log('Found JSON array pattern:', jsonArray.substring(0, 100) + '...');
+      try {
+        const parsedArray = JSON.parse(jsonArray);
+        if (Array.isArray(parsedArray) && parsedArray.length > 0) {
+          return parsedArray.filter(v => v && v.reference && v.text);
+        }
+      } catch (e) {
+        console.log('Failed to parse extracted JSON array:', e.message);
+      }
+    }
+  } catch (e) {
+    console.log('Error in JSON array extraction:', e.message);
+  }
+
+  // If that didn't work, look for verses in markdown or plain text format
   
-  for (const match of matches) {
+  // Pattern 1: Look for "Reference: Text" patterns
+  const referenceTextPattern = /([1-3]?\s*[A-Za-z]+\s+\d+:\d+(?:-\d+)?)\s*[:|-]\s*["']?(.*?)["']?(?=\n\n|\n[1-3]?[A-Za-z]+\s+\d+:\d+|$)/gs;
+  let match;
+  while ((match = referenceTextPattern.exec(text)) !== null) {
+    const reference = match[1].trim();
+    const verseText = match[2].trim();
+    if (reference && verseText) {
+      verses.push({
+        reference,
+        text: verseText
+      });
+    }
+  }
+  
+  // If we found verses with the first pattern, return them
+  if (verses.length > 0) {
+    console.log(`Found ${verses.length} verses using reference-text pattern`);
+    return verses;
+  }
+  
+  // Pattern 2: Try to find patterns like "John 3:16" followed by verse text
+  const referencePattern = /["']?([1-3]?\s*[A-Za-z]+\s+\d+:\d+(?:-\d+)?)["']?/g;
+  const matches = [...text.matchAll(referencePattern)];
+  
+  for (let i = 0; i < matches.length; i++) {
+    const match = matches[i];
     const reference = match[1].trim();
     const startIdx = match.index + match[0].length;
     
     // Look for the verse text after the reference
-    // This is a simplified approach that looks for the text between this reference and the next one
-    const nextMatchIdx = text.indexOf('"', startIdx);
-    const endIdx = nextMatchIdx !== -1 ? nextMatchIdx : text.indexOf('\n', startIdx);
+    // This looks for text until the next reference or a double newline
+    const nextMatch = i < matches.length - 1 ? matches[i+1] : null;
+    const nextMatchIdx = nextMatch ? nextMatch.index : -1;
     
-    if (endIdx !== -1) {
+    // Find the end of this verse text
+    let endIdx;
+    if (nextMatchIdx !== -1) {
+      // If there's another reference, use its position
+      endIdx = nextMatchIdx;
+    } else {
+      // Otherwise look for paragraph breaks or end of text
+      const newlineIdx = text.indexOf('\n\n', startIdx);
+      endIdx = newlineIdx !== -1 ? newlineIdx : text.length;
+    }
+    
+    if (endIdx !== -1 && endIdx > startIdx) {
       let verseText = text.substring(startIdx, endIdx).trim();
       
-      // Clean up any punctuation at the start
-      verseText = verseText.replace(/^\s*[:,-]\s*/, '').trim();
+      // Clean up any punctuation or formatting
+      verseText = verseText.replace(/^[\s:,"'\-–—]+/, '').trim();
+      verseText = verseText.replace(/^["']+|["']+$/g, '').trim();
       
-      if (verseText) {
+      if (verseText && verseText.length > 10) { // Require reasonable length to avoid fragments
         verses.push({
           reference,
           text: verseText
@@ -497,5 +743,21 @@ function extractVersesFromText(text) {
     }
   }
   
+  // Pattern 3: Look for numbered lists with references
+  if (verses.length === 0) {
+    const numberedVersePattern = /\d+\.\s+([1-3]?\s*[A-Za-z]+\s+\d+:\d+(?:-\d+)?)\s*[-:]\s*["']?(.*?)["']?(?=\n\d+\.|$)/gs;
+    while ((match = numberedVersePattern.exec(text)) !== null) {
+      const reference = match[1].trim();
+      const verseText = match[2].trim();
+      if (reference && verseText) {
+        verses.push({
+          reference,
+          text: verseText
+        });
+      }
+    }
+  }
+  
+  console.log(`Extraction complete, found ${verses.length} verses`);
   return verses;
 }
