@@ -270,36 +270,44 @@ For concepts or topics, include verses that directly address or illustrate the t
         throw new Error('Invalid response format from AI - missing verses array');
       }
       
-      // Validate each verse object and filter out invalid entries
-      result.verses = result.verses.filter(verse => 
+      // Validate each verse object but avoid over-sanitization
+      const processedVerses = result.verses.filter(verse => 
         verse && 
         typeof verse === 'object' && 
         typeof verse.reference === 'string' && 
         typeof verse.text === 'string'
       ).map(verse => ({
-        // Sanitize each field
-        reference: sanitizeInput(verse.reference, 50),
-        text: sanitizeInput(verse.text, 500)
-      })).slice(0, 15); // Limit to maximum 15 verses
+        reference: verse.reference,  // Keep original reference
+        text: verse.text  // Keep original text
+      }));
       
-      if (result.verses.length === 0) {
+      // Take at most 15 verses but don't truncate if less
+      const limitedVerses = processedVerses.length > 15 ? 
+        processedVerses.slice(0, 15) : 
+        processedVerses;
+      
+      if (limitedVerses.length === 0) {
         throw new Error('No valid verses returned from AI');
       }
       
-      console.log(`Successfully parsed ${result.verses.length} verses for query "${query}"`);
+      console.log(`Successfully parsed ${limitedVerses.length} verses for query "${query}"`);
+      
+      // Return a new object with the processed verses
+      return {
+        statusCode: 200,
+        headers: {
+          ...headers,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          verses: limitedVerses
+        })
+      };
+      
     } catch (parseError) {
       console.error('AI response parsing error:', parseError.message);
       throw new Error('Failed to parse AI response');
     }
-
-    return {
-      statusCode: 200,
-      headers: {
-        ...headers,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(result)
-    };
   } catch (error) {
     console.error('Verse search error:', error.message);
     return {

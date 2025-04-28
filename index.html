@@ -535,6 +535,9 @@
             button.disabled = true;
             button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Searching...';
             scripturesDiv.innerHTML = '<h2>Scriptures</h2><p class="loading">Finding verses about "' + query + '"...</p>';
+            
+            // Store the original query for display
+            const displayQuery = query;
 
             try {
                 const result = await findBibleVerses(query);
@@ -543,8 +546,9 @@
                     throw new Error('No verses found');
                 }
 
-                scripturesDiv.innerHTML = `
-                    <h2>Scriptures about "${query}"</h2>
+                // Save the scriptures in a variable to prevent them from being overwritten
+                const scriptureContent = `
+                    <h2>Scriptures about "${displayQuery}"</h2>
                     ${result.verses.map(verse => `
                         <div class="verse">
                             <div class="verse-reference">${verse.reference}</div>
@@ -552,15 +556,32 @@
                         </div>
                     `).join('')}
                 `;
+                
+                // Update the scriptures div with the content
+                scripturesDiv.innerHTML = scriptureContent;
 
                 // Generate reflection and prayer after displaying verses
-                await generateReflectionAndPrayer(query, result.verses);
+                try {
+                    await generateReflectionAndPrayer(query, result.verses);
+                } catch (reflectionError) {
+                    console.error('Reflection error:', reflectionError);
+                    document.getElementById('reflection').innerHTML = `
+                        <h2>Reflection & Prayer</h2>
+                        <div class="error">
+                            <p>Sorry, we couldn't generate a reflection at this time.</p>
+                            <p>Error: ${reflectionError.message}</p>
+                        </div>
+                    `;
+                    
+                    // Important: Even if reflection fails, don't let it erase the scriptures
+                    scripturesDiv.innerHTML = scriptureContent;
+                }
 
             } catch (error) {
                 scripturesDiv.innerHTML = `
                     <h2>Scriptures</h2>
                     <div class="error">
-                        <p>Sorry, we couldn't find any verses for "${query}".</p>
+                        <p>Sorry, we couldn't find any verses for "${displayQuery}".</p>
                         <p>Error: ${error.message}</p>
                     </div>
                 `;

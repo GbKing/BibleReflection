@@ -265,9 +265,23 @@ function generateUniqueId() {
 // Generate reflection without blocking the response
 async function generateReflection(id, topic, verses) {
   try {
-    // Validate and prepare verses text
+    console.log('Starting reflection generation for ID:', id);
+    
+    // Ensure we have valid input
+    if (!topic) {
+      console.error('Missing topic for reflection generation');
+      throw new Error('Missing topic for reflection');
+    }
+    
+    if (!verses || (Array.isArray(verses) && verses.length === 0)) {
+      console.error('Missing verses for reflection generation');
+      throw new Error('Missing verses for reflection');
+    }
+    
+    // Validate and prepare verses text - use original verses without sanitization limits
     let versesToUse = verses;
     if (Array.isArray(verses) && verses.length > 10) {
+      console.log(`Limiting from ${verses.length} verses to 10 verses to prevent token limit issues`);
       versesToUse = verses.slice(0, 10);
     }
 
@@ -284,8 +298,8 @@ async function generateReflection(id, topic, verses) {
       throw new Error('No valid verse text available');
     }
 
-    console.log('Generating reflection with topic length:', topic.length);
-    console.log('Verses text length:', versesText.length);
+    console.log('Generating reflection with topic:', topic);
+    console.log('Using verses count:', Array.isArray(versesToUse) ? versesToUse.length : 'text input');
 
     // Prepare API request
     const requestBody = {
@@ -318,8 +332,11 @@ End with a meaningful prayer related to this topic.`
     
     // Ensure we have the OpenAI API key
     if (!process.env.OPENAI_API_KEY) {
-      throw new Error('OpenAI API key is not defined');
+      console.error('OpenAI API key is missing');
+      throw new Error('API configuration error');
     }
+    
+    console.log('Sending request to OpenAI API...');
     
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -331,18 +348,27 @@ End with a meaningful prayer related to this topic.`
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
       console.error(`API error: HTTP ${response.status}`);
-      throw new Error(`API error: HTTP ${response.status}`);
+      throw new Error('API request failed');
     }
 
     const data = await response.json();
+    console.log('Received response from OpenAI API');
     
     if (!data.choices || !data.choices[0] || !data.choices[0].message) {
       throw new Error('Invalid API response format');
     }
     
-    // Update store with completed result
+    // Make sure the reflection store still has this ID
+    if (!REFLECTION_STORE[id]) {
+      console.log(`Store entry for ${id} no longer exists, creating new entry`);
+      REFLECTION_STORE[id] = {
+        status: 'pending',
+        started: new Date().toISOString()
+      };
+    }
+    
+    // Update store with completed result - don't sanitize the content further
     REFLECTION_STORE[id] = {
       status: 'completed',
       started: REFLECTION_STORE[id].started,
@@ -351,17 +377,29 @@ End with a meaningful prayer related to this topic.`
       error: null
     };
     
-    console.log('Successfully generated reflection');
+    console.log('Successfully generated and stored reflection for ID:', id);
     
   } catch (error) {
-    // Update store with error
     console.error('Reflection generation error:', error.message);
-    REFLECTION_STORE[id] = {
-      status: 'error',
-      started: REFLECTION_STORE[id].started,
-      completed: new Date().toISOString(),
-      result: null,
-      error: error.message
-    };
+    
+    // Make sure the reflection store still has this ID
+    if (!REFLECTION_STORE[id]) {
+      REFLECTION_STORE[id] = {
+        status: 'error',
+        started: new Date().toISOString(),
+        completed: new Date().toISOString(),
+        result: null,
+        error: 'Failed to generate reflection'
+      };
+    } else {
+      // Update existing entry with error
+      REFLECTION_STORE[id] = {
+        status: 'error',
+        started: REFLECTION_STORE[id].started, 
+        completed: new Date().toISOString(),
+        result: null,
+        error: 'Failed to generate reflection'
+      };
+    }
   }
 }
