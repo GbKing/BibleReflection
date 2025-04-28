@@ -360,18 +360,69 @@ End with a meaningful prayer related to this topic.`
     
     console.log('Sending request to OpenAI API...');
     
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
-      },
-      body: JSON.stringify(requestBody)
-    });
+    // Set up retry parameters for handling rate limits
+    const maxRetries = 3;
+    let retryCount = 0;
+    let retryDelay = 2000; // Start with 2 seconds delay
+    let response;
+    
+    // Retry loop for handling rate limit errors
+    while (retryCount <= maxRetries) {
+      try {
+        response = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+          },
+          body: JSON.stringify(requestBody)
+        });
+        
+        // Check if we got a rate limit error
+        if (response.status === 429) {
+          // Get the retry-after header if available
+          const retryAfter = response.headers.get('retry-after');
+          const waitTime = retryAfter ? parseInt(retryAfter) * 1000 : retryDelay;
+          
+          console.log(`OpenAI API rate limit hit. Retrying in ${waitTime/1000} seconds...`);
+          
+          // Update the store to indicate a retry is happening
+          if (REFLECTION_STORE[id]) {
+            REFLECTION_STORE[id].status = 'pending';
+            REFLECTION_STORE[id].retryCount = (REFLECTION_STORE[id].retryCount || 0) + 1;
+            REFLECTION_STORE[id].retryAfter = new Date(Date.now() + waitTime).toISOString();
+          }
+          
+          // Wait for the recommended time or our exponential backoff
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+          
+          // Increase retry count and delay for next potential retry
+          retryCount++;
+          retryDelay *= 2; // Exponential backoff
+          continue; // Skip to next iteration of the loop
+        }
+        
+        // Break the loop if we didn't get a 429 error
+        break;
+        
+      } catch (fetchError) {
+        console.error('Fetch error:', fetchError);
+        
+        // If we've used all our retries, throw the error
+        if (retryCount >= maxRetries) {
+          throw fetchError;
+        }
+        
+        // Otherwise, retry with exponential backoff
+        retryCount++;
+        retryDelay *= 2;
+        await new Promise(resolve => setTimeout(resolve, retryDelay));
+      }
+    }
 
     if (!response.ok) {
       console.error(`API error: HTTP ${response.status}`);
-      throw new Error('API request failed');
+      throw new Error(`API request failed with HTTP status ${response.status}`);
     }
 
     const data = await response.json();

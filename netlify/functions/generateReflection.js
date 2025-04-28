@@ -157,19 +157,30 @@ async function handleVerseSearch(query, headers) {
   try {
     console.log('Starting verse search for query:', query);
     
-    // Improve the system prompt with clearer formatting instructions without specific examples
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: "gpt-4-turbo",
-        messages: [
-          {
-            role: "system",
-            content: `You are a Bible scholar helping find relevant Bible verses. For any query (topic, book, character, event, or concept), return at least 5 relevant verses.
+    // Set up retry parameters for OpenAI API calls
+    const maxRetries = 3;
+    let retryCount = 0;
+    let retryDelay = 2000; // Start with 2 seconds delay
+    
+    let response;
+    let data;
+    
+    // Retry loop for handling rate limit errors
+    while (retryCount <= maxRetries) {
+      try {
+        // Improve the system prompt with clearer formatting instructions without specific examples
+        response = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+          },
+          body: JSON.stringify({
+            model: "gpt-4-turbo",
+            messages: [
+              {
+                role: "system",
+                content: `You are a Bible scholar helping find relevant Bible verses. For any query (topic, book, character, event, or concept), return at least 5 relevant verses.
 
 IMPORTANT: You must respond with ONLY clean, valid JSON in exactly this format with no additional text:
 {
@@ -189,23 +200,58 @@ For topics about biblical events, include verses that describe the event and its
 For Bible characters, include verses about key moments in their life and their relationship with God.
 For Bible books, include key verses that capture the main themes of the book.
 For concepts or topics, include verses that directly address or illustrate the topic.`
-          },
-          {
-            role: "user",
-            content: `Find relevant Bible verses for: ${query}`
-          }
-        ],
-        temperature: 0.3 // Using a lower temperature for more consistent formatting
-      })
-    });
+              },
+              {
+                role: "user",
+                content: `Find relevant Bible verses for: ${query}`
+              }
+            ],
+            temperature: 0.3 // Using a lower temperature for more consistent formatting
+          })
+        });
+        
+        // Check if we got a rate limit error
+        if (response.status === 429) {
+          // Get the retry-after header if available
+          const retryAfter = response.headers.get('retry-after');
+          const waitTime = retryAfter ? parseInt(retryAfter) * 1000 : retryDelay;
+          
+          console.log(`OpenAI API rate limit hit. Retrying in ${waitTime/1000} seconds...`);
+          
+          // Wait for the recommended time or our exponential backoff
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+          
+          // Increase retry count and delay for next potential retry
+          retryCount++;
+          retryDelay *= 2; // Exponential backoff
+          continue; // Skip to next iteration of the loop
+        }
+        
+        // Break the loop if we didn't get a 429 error
+        break;
+        
+      } catch (fetchError) {
+        console.error('Fetch error:', fetchError);
+        
+        // If we've used all our retries, throw the error
+        if (retryCount >= maxRetries) {
+          throw fetchError;
+        }
+        
+        // Otherwise, retry with exponential backoff
+        retryCount++;
+        retryDelay *= 2;
+        await new Promise(resolve => setTimeout(resolve, retryDelay));
+      }
+    }
 
     if (!response.ok) {
       // Don't log the entire error response as it might contain sensitive information
       console.error('OpenAI API error status:', response.status);
-      throw new Error('Failed to search verses');
+      throw new Error(`Failed to search verses (HTTP ${response.status})`);
     }
 
-    const data = await response.json();
+    data = await response.json();
     
     // Add logging to help troubleshoot any response content issues
     console.log('API response received:', data.choices && data.choices.length ? 'Valid choices' : 'No choices');
@@ -318,7 +364,7 @@ For concepts or topics, include verses that directly address or illustrate the t
       },
       body: JSON.stringify({
         error: 'Failed to find verses',
-        message: 'Could not find Bible verses for your query. Please try again.'
+        message: 'Could not find Bible verses for your query. Please try again later.'
       })
     };
   }
@@ -407,14 +453,57 @@ End with a meaningful prayer related to this topic.`
     
     console.log('Request prepared, sending to OpenAI API');
     
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
-      },
-      body: JSON.stringify(requestBody)
-    });
+    // Set up retry parameters
+    const maxRetries = 3;
+    let retryCount = 0;
+    let retryDelay = 2000; // Start with 2 seconds
+    let response;
+    
+    // Retry loop for handling rate limit errors
+    while (retryCount <= maxRetries) {
+      try {
+        response = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+          },
+          body: JSON.stringify(requestBody)
+        });
+        
+        // Check for rate limit error
+        if (response.status === 429) {
+          // Get retry-after header if available
+          const retryAfter = response.headers.get('retry-after');
+          const waitTime = retryAfter ? parseInt(retryAfter) * 1000 : retryDelay;
+          
+          console.log(`OpenAI API rate limit hit for reflection. Retrying in ${waitTime/1000} seconds...`);
+          
+          // Wait for the recommended time or use exponential backoff
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+          
+          // Update retry count and delay
+          retryCount++;
+          retryDelay *= 2; // Exponential backoff
+          continue;
+        }
+        
+        // If not a 429 error, break out of the loop
+        break;
+        
+      } catch (fetchError) {
+        console.error('Fetch error in reflection generation:', fetchError);
+        
+        if (retryCount >= maxRetries) {
+          throw fetchError;
+        }
+        
+        // Retry with exponential backoff
+        retryCount++;
+        retryDelay *= 2;
+        await new Promise(resolve => setTimeout(resolve, retryDelay));
+      }
+    }
 
     if (!response.ok) {
       console.error('OpenAI API error response status:', response.status);
