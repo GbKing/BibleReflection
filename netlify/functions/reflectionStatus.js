@@ -325,7 +325,7 @@ async function generateReflection(id, topic, verses) {
 
     // Prepare API request
     const requestBody = {
-      model: "gpt-4-turbo",
+      model: "gpt-3.5-turbo", // Changed from gpt-4-turbo to gpt-3.5-turbo for cheaper testing
       messages: [
         {
           role: "system",

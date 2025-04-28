@@ -176,7 +176,7 @@ async function handleVerseSearch(query, headers) {
             'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
           },
           body: JSON.stringify({
-            model: "gpt-4-turbo",
+            model: "gpt-3.5-turbo", // Changed from gpt-4-turbo to gpt-3.5-turbo for cheaper testing
             messages: [
               {
                 role: "system",
@@ -424,7 +424,7 @@ async function handleReflectionGeneration(topic, verses, headers) {
 
     // Prepare API request with sanitized inputs
     const requestBody = {
-      model: "gpt-4-turbo",
+      model: "gpt-3.5-turbo", // Changed from gpt-4-turbo to gpt-3.5-turbo for cheaper testing
       messages: [
         {
           role: "system",
