@@ -153,12 +153,14 @@ exports.handler = async function(event, context) {
   }
 };
 
+async function handleReflectionGeneration(topic, verses, headers) {
+  // Simply call the existing generateReflection function
+  return await generateReflection(verses, topic, headers);
+}
+
 async function handleVerseSearch(query, headers) {
   try {
     console.log('Starting verse search for query:', query);
-    
-    // Instead of using keyword lists to filter topics, we'll use the AI itself to determine if the topic
-    // can be addressed from a biblical perspective, similar to how the Bible app example works
     
     // Set up retry parameters for OpenAI API calls
     const maxRetries = 3;
@@ -199,112 +201,115 @@ Respond with a JSON object containing:
 
 For example:
 - For "How do I forgive someone who hurt me?", return {canBeAddressed: true, reason: "Forgiveness is a central biblical teaching found throughout scripture."}
-- For "Best cryptocurrencies to invest in", return {canBeAddressed: false, reason: "This is about financial investment specifics, not directly related to biblical principles."}
-- For a political figure like "Bill Clinton", you might return {canBeAddressed: true, reason: "While not mentioned in scripture, biblical principles about leadership and prayer for authority figures apply."}`
+- For "How do dinosaurs relate to the Bible?", return {canBeAddressed: true, reason: "While dinosaurs aren't directly mentioned in the Bible, this topic can be addressed through discussions of creation, science and faith."}
+- For "Show me sexually explicit content", return {canBeAddressed: false, reason: "This request contains inappropriate content."}
+- For "Best pizza toppings", return {canBeAddressed: false, reason: "This topic has no meaningful connection to biblical teachings or Christian faith."}
+`
               },
               {
                 role: "user",
-                content: `Can this query be addressed from a biblical perspective: "${query}"?`
+                content: `Topic: "${query}"`
               }
             ],
-            temperature: 0.3
-          })
+            temperature: 0.1,
+            response_format: { type: "json_object" } // Ensure JSON format
+          }),
+          timeout: 15000 // 15 second timeout
         });
-        
-        // Check if we got a rate limit error
-        if (response.status === 429) {
-          // Get the retry-after header if available
-          const retryAfter = response.headers.get('retry-after');
-          const waitTime = retryAfter ? parseInt(retryAfter) * 1000 : retryDelay;
+
+        // Handle response status
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`OpenAI API error (${response.status}):`, errorText);
           
-          console.log(`OpenAI API rate limit hit. Retrying in ${waitTime/1000} seconds...`);
+          // Handle specific error codes
+          if (response.status === 429) {
+            console.log(`Rate limited by OpenAI API. Attempt ${retryCount + 1} of ${maxRetries + 1}`);
+            retryCount++;
+            if (retryCount <= maxRetries) {
+              await new Promise(resolve => setTimeout(resolve, retryDelay));
+              // Exponential backoff
+              retryDelay *= 2;
+              continue;
+            }
+          }
           
-          // Wait for the recommended time or our exponential backoff
-          await new Promise(resolve => setTimeout(resolve, waitTime));
-          
-          // Increase retry count and delay for next potential retry
-          retryCount++;
-          retryDelay *= 2; // Exponential backoff
-          continue; // Skip to next iteration of the loop
+          throw new Error(`OpenAI API error: ${response.status} ${errorText}`);
         }
         
-        // Break the loop if we didn't get a 429 error
-        break;
+        // Get the response JSON
+        const responseText = await response.text();
         
-      } catch (fetchError) {
-        console.error('Fetch error:', fetchError);
-        
-        // If we've used all our retries, throw the error
-        if (retryCount >= maxRetries) {
-          throw fetchError;
-        }
-        
-        // Otherwise, retry with exponential backoff
-        retryCount++;
-        retryDelay *= 2;
-        await new Promise(resolve => setTimeout(resolve, retryDelay));
-      }
-    }
-
-    if (!response.ok) {
-      console.error('OpenAI API error status:', response.status);
-      throw new Error(`Failed to evaluate query (HTTP ${response.status})`);
-    }
-
-    data = await response.json();
-    
-    if (!data.choices || !data.choices[0] || !data.choices[0].message || !data.choices[0].message.content) {
-      console.error('Invalid OpenAI API response structure');
-      throw new Error('Invalid response structure from OpenAI API');
-    }
-    
-    // Parse the evaluation result
-    const evaluationContent = data.choices[0].message.content.trim();
-    let evaluation;
-    
-    try {
-      // Parse the JSON response
-      evaluation = JSON.parse(evaluationContent);
-    } catch (parseError) {
-      console.error('Failed to parse evaluation response:', parseError);
-      
-      // Try to extract JSON if it's wrapped in markdown or other text
-      const jsonMatch = evaluationContent.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
         try {
-          evaluation = JSON.parse(jsonMatch[0]);
-        } catch (e) {
-          console.error('Failed to extract JSON from response');
-          throw new Error('Could not parse evaluation response');
+          // Parse the response in a try/catch to handle malformed JSON
+          data = JSON.parse(responseText);
+        } catch (jsonError) {
+          console.error('Failed to parse OpenAI response as JSON:', responseText.substring(0, 200));
+          throw new Error('Invalid response format from OpenAI API');
         }
-      } else {
-        throw new Error('Could not parse evaluation response');
+        
+        break; // Success, exit the retry loop
+        
+      } catch (err) {
+        console.error(`API request attempt ${retryCount + 1} failed:`, err);
+        
+        retryCount++;
+        
+        // If we've exceeded retries, rethrow the error
+        if (retryCount > maxRetries) {
+          throw err;
+        }
+        
+        // Otherwise wait and then continue the retry loop
+        await new Promise(resolve => setTimeout(resolve, retryDelay));
+        retryDelay *= 2; // Exponential backoff
       }
     }
     
-    // If the query cannot be addressed from a biblical perspective, provide guidance
+    // Validate the data structure
+    if (!data || !data.choices || !data.choices[0] || !data.choices[0].message || !data.choices[0].message.content) {
+      console.error('Invalid response structure from OpenAI API:', JSON.stringify(data));
+      throw new Error('Invalid response from AI service');
+    }
+    
+    // Parse the content as JSON
+    let evaluation;
+    try {
+      evaluation = JSON.parse(data.choices[0].message.content);
+    } catch (jsonError) {
+      console.error('Failed to parse evaluation content as JSON:', data.choices[0].message.content);
+      // If JSON parsing fails, try to detect if it looks like a positive response
+      const content = data.choices[0].message.content.toLowerCase();
+      evaluation = {
+        canBeAddressed: content.includes('true') && !content.includes('false'),
+        reason: 'Extracted from non-JSON response'
+      };
+    }
+    
+    // Check if the topic can be addressed from a biblical perspective
     if (!evaluation.canBeAddressed) {
-      console.log(`Query cannot be addressed biblically: "${query}", Reason: ${evaluation.reason}`);
+      console.log('Topic cannot be addressed biblically:', evaluation.reason);
       return {
-        statusCode: 200,
+        statusCode: 400,
         headers: {
           ...headers,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          notBibleRelated: true,
-          message: "I'm happy to help with Bible-related questions. This topic doesn't appear to have a strong connection to biblical teachings or principles. If you'd like, you can ask about scriptures, biblical characters, Christian living, or how the Bible might provide guidance for specific life situations."
+          error: 'Invalid topic',
+          message: 'This topic cannot be addressed from a biblical perspective',
+          reason: evaluation.reason
         })
       };
     }
     
-    console.log(`Query can be addressed biblically: "${query}", Reason: ${evaluation.reason}`);
+    console.log('Topic can be addressed biblically. Proceeding to find verses.');
     
-    // Reset for the verse search request
+    // Reset retry variables for the next API call
     retryCount = 0;
     retryDelay = 2000;
     
-    // Now proceed with finding relevant verses
+    // Now find relevant verses
     while (retryCount <= maxRetries) {
       try {
         response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -314,336 +319,126 @@ For example:
             'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
           },
           body: JSON.stringify({
-            model: "gpt-3.5-turbo",
+            model: "gpt-4-turbo",
             messages: [
               {
                 role: "system",
-                content: `You are a Bible scholar helping find relevant Bible verses. For any query (topic, book, character, event, or concept), return at least 5 relevant verses.
+                content: `You are a Bible expert assistant that provides relevant Scripture verses for any topic, question, or biblical theme. Your task is to:
 
-IMPORTANT: You must respond with ONLY clean, valid JSON in exactly this format with no additional text:
+1. Find 5-7 most relevant Bible verses for the given topic
+2. Format each verse with its reference and text in modern English (preferably NIV, ESV, or NLT translation)
+3. Return verses that offer wisdom, guidance, comfort, or insight on the topic
+4. When responding to questions about specific Bible stories, include key verses that tell that story
+5. Include a diverse selection of verses from both Old and New Testaments when appropriate
+6. For personal struggles or life questions, include encouraging and hopeful verses
+
+Your response must be in JSON format with this structure:
 {
   "verses": [
     {
-      "reference": "Book C:V",
-      "text": "Verse text here"
-    }
+      "reference": "John 3:16",
+      "text": "For God so loved the world that he gave his one and only Son, that whoever believes in him shall not perish but have eternal life."
+    },
+    // more verses...
   ]
 }
 
-DO NOT include any markdown formatting, code blocks, or explanatory text.
-DO NOT surround your response with backticks.
-ONLY respond with the raw JSON object - nothing before, nothing after.
-
-For topics about biblical events, include verses that describe the event and its significance.
-For Bible characters, include verses about key moments in their life and their relationship with God.
-For Bible books, include key verses that capture the main themes of the book.
-For concepts or topics, include verses that directly address or illustrate the topic.
-For modern topics not explicitly mentioned in the Bible, find verses that offer relevant principles or guidance.`
+Always verify that your verse references are accurate and the text matches the actual Bible verse.`
               },
               {
                 role: "user",
-                content: `Find relevant Bible verses for: ${query}`
+                content: `Topic: "${query}"`
               }
             ],
-            temperature: 0.3
-          })
+            temperature: 0.3,
+            response_format: { type: "json_object" } // Ensure JSON format
+          }),
+          timeout: 20000 // 20 second timeout
         });
         
-        if (response.status === 429) {
-          const retryAfter = response.headers.get('retry-after');
-          const waitTime = retryAfter ? parseInt(retryAfter) * 1000 : retryDelay;
-          console.log(`OpenAI API rate limit hit. Retrying in ${waitTime/1000} seconds...`);
-          await new Promise(resolve => setTimeout(resolve, waitTime));
-          retryCount++;
-          retryDelay *= 2;
-          continue;
+        // Handle response status
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`OpenAI API error (${response.status}):`, errorText);
+          
+          if (response.status === 429) {
+            console.log(`Rate limited by OpenAI API. Attempt ${retryCount + 1} of ${maxRetries + 1}`);
+            retryCount++;
+            if (retryCount <= maxRetries) {
+              await new Promise(resolve => setTimeout(resolve, retryDelay));
+              retryDelay *= 2;
+              continue;
+            }
+          }
+          
+          throw new Error(`OpenAI API error: ${response.status} ${errorText}`);
         }
         
-        break;
-      } catch (fetchError) {
-        console.error('Fetch error:', fetchError);
-        if (retryCount >= maxRetries) {
-          throw fetchError;
-        }
-        retryCount++;
-        retryDelay *= 2;
-        await new Promise(resolve => setTimeout(resolve, retryDelay));
-      }
-    }
-
-    if (!response.ok) {
-      console.error('OpenAI API error status:', response.status);
-      throw new Error(`Failed to search verses (HTTP ${response.status})`);
-    }
-
-    data = await response.json();
-    
-    console.log('API response received:', data.choices && data.choices.length ? 'Valid choices' : 'No choices');
-    
-    if (!data.choices || !data.choices[0] || !data.choices[0].message || !data.choices[0].message.content) {
-      console.error('Invalid OpenAI API response structure');
-      throw new Error('Invalid response structure from OpenAI API');
-    }
-    
-    const contentString = data.choices[0].message.content.trim();
-    console.log('Response content preview length:', contentString.length);
-    
-    let result;
-    
-    try {
-      // Multi-stage parsing approach with advanced cleanup
-      
-      // 1. First attempt direct parsing
-      try {
-        result = JSON.parse(contentString);
-      } catch (initialParseError) {
-        console.log('Initial JSON parsing failed, attempting cleanup');
+        // Get the response text
+        const responseText = await response.text();
         
-        // 2. Try to clean up the response
-        let cleanedContent = contentString;
-        
-        // Remove any markdown code blocks
-        cleanedContent = cleanedContent
-          .replace(/```json/g, '')
-          .replace(/```/g, '')
-          .trim();
-        
-        // Try to extract just the JSON object if there's other text
-        const jsonRegex = /(\{[\s\S]*\})/g;
-        const jsonMatch = cleanedContent.match(jsonRegex);
-        
-        if (jsonMatch && jsonMatch.length > 0) {
-          cleanedContent = jsonMatch[0];
-          console.log('Extracted JSON object from mixed content');
-        }
-        
-        // 3. Try parsing with cleaned content
         try {
-          result = JSON.parse(cleanedContent);
-          console.log('Successfully parsed JSON after cleaning');
-        } catch (cleanParseError) {
-          // 4. Last resort - try to fix common JSON syntax issues
-          try {
-            // Replace single quotes with double quotes (common GPT error)
-            const doubleQuoteContent = cleanedContent.replace(/'/g, '"');
-            result = JSON.parse(doubleQuoteContent);
-            console.log('Successfully parsed JSON after replacing quotes');
-          } catch (fixedParseError) {
-            console.error('All JSON parsing attempts failed');
-            throw initialParseError; // Throw original error if all attempts fail
-          }
-        }
-      }
-      
-      // Validate the response structure
-      if (!result.verses || !Array.isArray(result.verses)) {
-        throw new Error('Invalid response format from AI - missing verses array');
-      }
-      
-      // Validate each verse object but avoid over-sanitization
-      const processedVerses = result.verses.filter(verse => 
-        verse && 
-        typeof verse === 'object' && 
-        typeof verse.reference === 'string' && 
-        typeof verse.text === 'string'
-      ).map(verse => ({
-        reference: verse.reference,  // Keep original reference
-        text: verse.text  // Keep original text
-      }));
-      
-      // Take at most 15 verses but don't truncate if less
-      const limitedVerses = processedVerses.length > 15 ? 
-        processedVerses.slice(0, 15) : 
-        processedVerses;
-      
-      if (limitedVerses.length === 0) {
-        throw new Error('No valid verses returned from AI');
-      }
-      
-      console.log(`Successfully parsed ${limitedVerses.length} verses for query "${query}"`);
-      
-      // Return a new object with the processed verses
-      return {
-        statusCode: 200,
-        headers: {
-          ...headers,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          verses: limitedVerses
-        })
-      };
-      
-    } catch (parseError) {
-      console.error('AI response parsing error:', parseError.message);
-      throw new Error('Failed to parse AI response');
-    }
-  } catch (error) {
-    console.error('Verse search error:', error.message);
-    return {
-      statusCode: 500,
-      headers: {
-        ...headers,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        error: 'Failed to find verses',
-        message: 'Could not find Bible verses for your query. Please try again later.'
-      })
-    };
-  }
-}
-
-async function handleReflectionGeneration(topic, verses, headers) {
-  try {
-    // Validate and sanitize input
-    if (!topic || typeof topic !== 'string') {
-      throw new Error('Invalid topic provided');
-    }
-    
-    if (!verses || (!Array.isArray(verses) && typeof verses !== 'string')) {
-      throw new Error('Invalid verses data provided');
-    }
-    
-    // Sanitize topic
-    const sanitizedTopic = sanitizeInput(topic);
-    
-    // Limit number of verses to prevent token limit issues and sanitize each verse
-    let versesToUse = verses;
-    if (Array.isArray(verses)) {
-      if (verses.length > 10) {
-        console.log(`Limiting from ${verses.length} verses to 10 verses to prevent token limit issues`);
-      }
-      
-      // Take maximum 10 verses and sanitize them
-      versesToUse = verses
-        .slice(0, 10)
-        .map(v => {
-          if (!v || !v.reference || !v.text) {
-            return null;
-          }
-          return {
-            reference: sanitizeInput(v.reference, 50),
-            text: sanitizeInput(v.text, 500)
-          };
-        })
-        .filter(Boolean); // Remove any null entries
-    } else if (typeof verses === 'string') {
-      // If string input, just sanitize it
-      versesToUse = sanitizeInput(verses, 5000);
-    }
-
-    // Ensure we have verses to work with
-    const versesText = Array.isArray(versesToUse) 
-      ? versesToUse.map(v => `${v.reference}: ${v.text}`).join('\n')
-      : versesToUse;
-
-    if (!versesText.trim()) {
-      throw new Error('No valid verse text available');
-    }
-
-    console.log('Generating reflection for topic:', sanitizedTopic);
-    console.log('Using verses count:', Array.isArray(versesToUse) ? versesToUse.length : 'text input');
-    console.log('API Key defined:', !!process.env.OPENAI_API_KEY);
-
-    // Prepare API request with sanitized inputs
-    const requestBody = {
-      model: "gpt-3.5-turbo", // Changed from gpt-4-turbo to gpt-3.5-turbo for cheaper testing
-      messages: [
-        {
-          role: "system",
-          content: `You are a Christian devotional writer with deep theological understanding and a gift for reflection. 
-Your goal is to create profound, thoughtful reflections on spiritual topics that engage the reader in meaningful contemplation.
-Your reflections should be original, insightful, and thought-provoking, not merely explanations of Bible verses.
-Include scriptural references naturally within your writing, but don't simply explain the verses.
-End with a heartfelt prayer that relates to the topic and the spiritual journey of the reader.`
-        },
-        {
-          role: "user",
-          content: `Write a deep, thoughtful Christian reflection on the topic of "${sanitizedTopic}". 
-          
-Some relevant scriptures for this topic include:
-
-${versesText}
-
-However, don't simply explain these verses. Instead, provide a robust, contemplative reflection on the topic itself. 
-Consider theological implications, personal application, and spiritual growth. 
-The reflection should be profound and insightful, drawing on biblical wisdom but not limited to only the verses listed.
-End with a meaningful prayer related to this topic.`
-        }
-      ],
-      temperature: 0.7
-    };
-    
-    console.log('Request prepared, sending to OpenAI API');
-    
-    // Set up retry parameters
-    const maxRetries = 3;
-    let retryCount = 0;
-    let retryDelay = 2000; // Start with 2 seconds
-    let response;
-    
-    // Retry loop for handling rate limit errors
-    while (retryCount <= maxRetries) {
-      try {
-        response = await fetch('https://api.openai.com/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
-          },
-          body: JSON.stringify(requestBody)
-        });
-        
-        // Check for rate limit error
-        if (response.status === 429) {
-          // Get retry-after header if available
-          const retryAfter = response.headers.get('retry-after');
-          const waitTime = retryAfter ? parseInt(retryAfter) * 1000 : retryDelay;
-          
-          console.log(`OpenAI API rate limit hit for reflection. Retrying in ${waitTime/1000} seconds...`);
-          
-          // Wait for the recommended time or use exponential backoff
-          await new Promise(resolve => setTimeout(resolve, waitTime));
-          
-          // Update retry count and delay
-          retryCount++;
-          retryDelay *= 2; // Exponential backoff
-          continue;
+          // Parse the response in a try/catch to handle malformed JSON
+          data = JSON.parse(responseText);
+        } catch (jsonError) {
+          console.error('Failed to parse OpenAI response as JSON:', responseText.substring(0, 200));
+          throw new Error('Invalid response format from OpenAI API');
         }
         
-        // If not a 429 error, break out of the loop
-        break;
+        break; // Success, exit the retry loop
         
-      } catch (fetchError) {
-        console.error('Fetch error in reflection generation:', fetchError);
+      } catch (err) {
+        console.error(`API request attempt ${retryCount + 1} failed:`, err);
         
-        if (retryCount >= maxRetries) {
-          throw fetchError;
-        }
-        
-        // Retry with exponential backoff
         retryCount++;
-        retryDelay *= 2;
+        
+        if (retryCount > maxRetries) {
+          throw err;
+        }
+        
         await new Promise(resolve => setTimeout(resolve, retryDelay));
+        retryDelay *= 2;
       }
     }
-
-    if (!response.ok) {
-      console.error('OpenAI API error response status:', response.status);
-      throw new Error(`OpenAI API error: HTTP ${response.status}`);
-    }
-
-    const data = await response.json();
     
+    // Validate the data structure
     if (!data || !data.choices || !data.choices[0] || !data.choices[0].message || !data.choices[0].message.content) {
-      console.error('Invalid OpenAI response format');
-      throw new Error('Invalid response from OpenAI API');
+      console.error('Invalid response structure from OpenAI API:', JSON.stringify(data));
+      throw new Error('Invalid response from AI service');
     }
     
-    // Sanitize the reflection content before returning
-    const sanitizedResult = sanitizeInput(data.choices[0].message.content, 10000);
-    console.log('Reflection generated successfully');
+    // Parse the content as JSON
+    let verses;
+    try {
+      const verseData = JSON.parse(data.choices[0].message.content);
+      verses = verseData.verses;
+    } catch (jsonError) {
+      console.error('Failed to parse verse data as JSON:', data.choices[0].message.content);
+      
+      // If JSON parsing fails, attempt to extract verses with regex
+      // This is a fallback mechanism for when the model doesn't return proper JSON
+      try {
+        const content = data.choices[0].message.content;
+        const extractedVerses = extractVersesFromText(content);
+        
+        if (extractedVerses.length > 0) {
+          verses = extractedVerses;
+        } else {
+          throw new Error('Could not extract verses from response');
+        }
+      } catch (extractError) {
+        console.error('Failed to extract verses from text:', extractError);
+        throw new Error('Failed to parse verse data from response');
+      }
+    }
+    
+    // Ensure verses is an array and contains at least one verse
+    if (!Array.isArray(verses) || verses.length === 0) {
+      console.error('No verses found in response');
+      throw new Error('No Bible verses found for this topic');
+    }
+    
+    console.log(`Found ${verses.length} relevant verses for "${query}"`);
     
     return {
       statusCode: 200,
@@ -651,12 +446,11 @@ End with a meaningful prayer related to this topic.`
         ...headers,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        result: sanitizedResult
-      })
+      body: JSON.stringify({ verses })
     };
+
   } catch (error) {
-    console.error('Reflection generation error:', error.message);
+    console.error('Verse search error:', error);
     return {
       statusCode: 500,
       headers: {
@@ -664,9 +458,44 @@ End with a meaningful prayer related to this topic.`
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        error: 'Failed to generate reflection',
-        message: 'Unable to generate a reflection at this time. Please try again later.'
+        error: 'Verse search failed',
+        message: error.message || 'An error occurred while searching for verses'
       })
     };
   }
+}
+
+// Helper function to extract verses from text when JSON parsing fails
+function extractVersesFromText(text) {
+  const verses = [];
+  
+  // Try to find patterns like "John 3:16" followed by verse text
+  const referencePattern = /["']?([1-3]?\s?[A-Za-z]+\s+\d+:\d+(?:-\d+)?)["']?/g;
+  const matches = text.matchAll(referencePattern);
+  
+  for (const match of matches) {
+    const reference = match[1].trim();
+    const startIdx = match.index + match[0].length;
+    
+    // Look for the verse text after the reference
+    // This is a simplified approach that looks for the text between this reference and the next one
+    const nextMatchIdx = text.indexOf('"', startIdx);
+    const endIdx = nextMatchIdx !== -1 ? nextMatchIdx : text.indexOf('\n', startIdx);
+    
+    if (endIdx !== -1) {
+      let verseText = text.substring(startIdx, endIdx).trim();
+      
+      // Clean up any punctuation at the start
+      verseText = verseText.replace(/^\s*[:,-]\s*/, '').trim();
+      
+      if (verseText) {
+        verses.push({
+          reference,
+          text: verseText
+        });
+      }
+    }
+  }
+  
+  return verses;
 }
