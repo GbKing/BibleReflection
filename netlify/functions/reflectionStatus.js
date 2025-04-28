@@ -41,7 +41,7 @@ function checkRateLimit(ip) {
 }
 
 // Sanitize inputs to prevent injection attacks
-function sanitizeInput(input, maxLength = 100) {
+function sanitizeInput(input, maxLength = 1000) {  // Increased default max length
   if (typeof input !== 'string') {
     return '';
   }
@@ -62,8 +62,8 @@ function validateVerses(verses, maxVerses = 10) {
       typeof verse.text === 'string'
     )
     .map(verse => ({
-      reference: sanitizeInput(verse.reference, 50),
-      text: sanitizeInput(verse.text, 500)
+      reference: sanitizeInput(verse.reference, 100),  // Increased from 50
+      text: sanitizeInput(verse.text, 1000)  // Increased from 500
     }))
     .slice(0, maxVerses); // Limit total number of verses
 }
@@ -284,6 +284,9 @@ async function generateReflection(id, topic, verses) {
       throw new Error('No valid verse text available');
     }
 
+    console.log('Generating reflection with topic length:', topic.length);
+    console.log('Verses text length:', versesText.length);
+
     // Prepare API request
     const requestBody = {
       model: "gpt-4-turbo",
@@ -313,6 +316,11 @@ End with a meaningful prayer related to this topic.`
       temperature: 0.7
     };
     
+    // Ensure we have the OpenAI API key
+    if (!process.env.OPENAI_API_KEY) {
+      throw new Error('OpenAI API key is not defined');
+    }
+    
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -324,7 +332,8 @@ End with a meaningful prayer related to this topic.`
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`API error: ${response.status} - ${errorText.substring(0, 100)}`);
+      console.error(`API error: HTTP ${response.status}`);
+      throw new Error(`API error: HTTP ${response.status}`);
     }
 
     const data = await response.json();
@@ -342,8 +351,11 @@ End with a meaningful prayer related to this topic.`
       error: null
     };
     
+    console.log('Successfully generated reflection');
+    
   } catch (error) {
     // Update store with error
+    console.error('Reflection generation error:', error.message);
     REFLECTION_STORE[id] = {
       status: 'error',
       started: REFLECTION_STORE[id].started,

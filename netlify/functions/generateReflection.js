@@ -39,7 +39,7 @@ function checkRateLimit(ip) {
 }
 
 // Sanitize inputs to prevent injection attacks
-function sanitizeInput(input, maxLength = 100) {
+function sanitizeInput(input, maxLength = 1000) {  // Increased default max length
   if (typeof input !== 'string') {
     return '';
   }
