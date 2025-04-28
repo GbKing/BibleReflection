@@ -20,6 +20,17 @@ An interactive web application that helps users find relevant Bible verses for a
 - **Modern UI**: Updated with cleaner layout, visual feedback, and improved user experience
 - **Loading States**: Added loading indicators for a better user experience during searches
 - **Error Handling**: Better handling and display of error states
+- **Security Enhancements**: Added comprehensive protection for public deployment (rate limiting, input validation, sanitization)
+
+## Security Features
+
+- **Rate limiting**: Protects against abuse with limits of 5 requests per minute per IP
+- **Input validation**: Prevents malicious or excessively long inputs
+- **Content filtering**: Basic filtering of inappropriate content
+- **Data sanitization**: All inputs and outputs are sanitized to prevent injection attacks
+- **Resource protection**: Automatic cleanup of stale data and prevention of memory leaks
+- **Safe error handling**: User-friendly errors without exposing implementation details
+- **Response sanitization**: All API responses are cleaned before returning to clients
 
 ## Setup
 
