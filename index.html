@@ -337,11 +337,11 @@
 
             while (retries < maxRetries) {
                 try {
-                    // Update loading message to show retry attempt if applicable
-                    if (retries > 0) {
-                        scripturesDiv.innerHTML = `<h2>Scriptures</h2><p class="loading">Searching attempt ${retries + 1}/${maxRetries}...</p>`;
-                    }
-                    
+                    // Show a user-friendly loading message without exposing retry details
+                    // Use animated loading dots for a better user experience
+                    const loadingDots = '.'.repeat((retries % 3) + 1).padEnd(3, ' ');
+                        scripturesDiv.innerHTML = `<h2>Scriptures</h2><p class="loading">Finding verses about "${query}"${loadingDots}</p>`;
+                                        
                     const response = await fetch('/api/generateReflection', {
                         method: 'POST',
                         headers: {
