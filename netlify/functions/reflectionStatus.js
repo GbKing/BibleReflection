@@ -5,39 +5,42 @@ const fetch = require('node-fetch');
 const REFLECTION_STORE = {};
 const RATE_LIMIT_STORE = {};
 const RATE_WINDOW_MS = 60 * 1000; // 1 minute window
-const MAX_REQUESTS_PER_IP = 5; // 5 requests per minute
+const MAX_POST_REQUESTS_PER_IP = 5; // 5 POST requests per minute (for starting new reflections)
+const MAX_GET_REQUESTS_PER_IP = 60; // 60 GET requests per minute (for checking status)
 const MAX_STORE_AGE_MS = 30 * 60 * 1000; // 30 minutes max storage
 
 // Helper function to check rate limits
-function checkRateLimit(ip) {
+function checkRateLimit(ip, requestType) {
   const now = Date.now();
+  const key = `${ip}-${requestType}`;
   
   // Clean up old entries
-  Object.keys(RATE_LIMIT_STORE).forEach(key => {
-    if (now - RATE_LIMIT_STORE[key].timestamp > RATE_WINDOW_MS) {
-      delete RATE_LIMIT_STORE[key];
+  Object.keys(RATE_LIMIT_STORE).forEach(existingKey => {
+    if (now - RATE_LIMIT_STORE[existingKey].timestamp > RATE_WINDOW_MS) {
+      delete RATE_LIMIT_STORE[existingKey];
     }
   });
   
-  // Initialize if this IP is new
-  if (!RATE_LIMIT_STORE[ip]) {
-    RATE_LIMIT_STORE[ip] = {
+  // Initialize if this key is new
+  if (!RATE_LIMIT_STORE[key]) {
+    RATE_LIMIT_STORE[key] = {
       count: 0,
       timestamp: now
     };
   }
   
-  // If IP exists but timestamp is old, reset the counter
-  if (now - RATE_LIMIT_STORE[ip].timestamp > RATE_WINDOW_MS) {
-    RATE_LIMIT_STORE[ip].count = 0;
-    RATE_LIMIT_STORE[ip].timestamp = now;
+  // If key exists but timestamp is old, reset the counter
+  if (now - RATE_LIMIT_STORE[key].timestamp > RATE_WINDOW_MS) {
+    RATE_LIMIT_STORE[key].count = 0;
+    RATE_LIMIT_STORE[key].timestamp = now;
   }
   
   // Increment request count
-  RATE_LIMIT_STORE[ip].count++;
+  RATE_LIMIT_STORE[key].count++;
   
   // Return true if rate limit exceeded
-  return RATE_LIMIT_STORE[ip].count > MAX_REQUESTS_PER_IP;
+  const limit = requestType === 'GET' ? MAX_GET_REQUESTS_PER_IP : MAX_POST_REQUESTS_PER_IP;
+  return RATE_LIMIT_STORE[key].count > limit;
 }
 
 // Sanitize inputs to prevent injection attacks
@@ -105,24 +108,26 @@ exports.handler = async function(event, context) {
                  event.headers['x-forwarded-for'] || 
                  'unknown-ip';
   
-  // Check rate limit
-  if (checkRateLimit(clientIP)) {
-    console.log(`Rate limit exceeded for IP: ${clientIP}`);
-    return {
-      statusCode: 429,
-      headers: {
-        ...headers,
-        'Content-Type': 'application/json',
-        'Retry-After': '60'
-      },
-      body: JSON.stringify({
-        error: 'Too many requests',
-        message: 'Please try again in a minute'
-      })
-    };
-  }
+  // The rate limit check will be done separately for each HTTP method
 
   if (event.httpMethod === 'POST') {
+    // Check rate limit for POST requests
+    if (checkRateLimit(clientIP, 'POST')) {
+      console.log(`Rate limit exceeded for IP: ${clientIP}`);
+      return {
+        statusCode: 429,
+        headers: {
+          ...headers,
+          'Content-Type': 'application/json',
+          'Retry-After': '60'
+        },
+        body: JSON.stringify({
+          error: 'Too many requests',
+          message: 'Please try again in a minute'
+        })
+      };
+    }
+
     // Start a new reflection generation process
     try {
       if (!event.body) {
@@ -188,6 +193,23 @@ exports.handler = async function(event, context) {
   } else if (event.httpMethod === 'GET') {
     // Check status of a reflection generation process
     try {
+      // Apply a more relaxed rate limit for GET requests (status checks)
+      if (checkRateLimit(clientIP, 'GET')) {
+        console.log(`GET rate limit exceeded for IP: ${clientIP}`);
+        return {
+          statusCode: 429,
+          headers: {
+            ...headers,
+            'Content-Type': 'application/json',
+            'Retry-After': '60'
+          },
+          body: JSON.stringify({
+            error: 'Too many requests',
+            message: 'Too many status checks. Please try again in a minute.'
+          })
+        };
+      }
+      
       const reflectionId = sanitizeInput(event.queryStringParameters?.id || '');
       
       if (!reflectionId || !REFLECTION_STORE[reflectionId]) {

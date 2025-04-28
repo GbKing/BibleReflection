@@ -4,7 +4,7 @@ const fetch = require('node-fetch');
 // Note: This is reset whenever the function is re-deployed
 const RATE_LIMIT_STORE = {};
 const RATE_WINDOW_MS = 60 * 1000; // 1 minute window
-const MAX_REQUESTS_PER_IP = 5; // 5 requests per minute
+const MAX_REQUESTS_PER_IP = 10; // Increased from 5 to 10 requests per minute
 
 // Helper function to check rate limits
 function checkRateLimit(ip) {
