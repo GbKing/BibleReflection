@@ -9,6 +9,17 @@ An interactive web application that helps users find relevant Bible verses for a
 - AI-powered devotional reflections and prayers
 - Responsive design that works on all devices
 - Automatic cleaning of scripture text
+- Robust error handling with automatic retry logic
+- Enhanced UI with modern styling and visual feedback
+- Keyboard support for better accessibility
+
+## Recent Improvements
+
+- **Enhanced Reliability**: Implemented automatic retry mechanism for Scripture searches
+- **Robust JSON Parsing**: Improved handling of complex queries with advanced parsing techniques
+- **Modern UI**: Updated with cleaner layout, visual feedback, and improved user experience
+- **Loading States**: Added loading indicators for a better user experience during searches
+- **Error Handling**: Better handling and display of error states
 
 ## Setup
 
@@ -45,6 +56,31 @@ The app uses two serverless functions:
 2. `reflectionStatus.js` - Implements background processing for reflection generation on Netlify to avoid timeout issues
 
 The frontend automatically detects whether it's running locally or on Netlify and uses the appropriate approach.
+
+## Technical Details
+
+### Scripture Search
+
+The app uses a multi-stage parsing approach to handle responses from the OpenAI API, ensuring reliable results even for complex queries:
+
+1. Direct JSON parsing for well-formed responses
+2. Cleanup of markdown formatting and code blocks
+3. Extraction of JSON objects from mixed content
+4. Fixing of common syntax issues
+
+### UI Elements
+
+- Responsive design adapts to all screen sizes
+- Visual feedback during loading states
+- Enhanced error messages
+- Keyboard accessibility (search with Enter key)
+- Smooth transitions and hover effects
+
+### Error Handling
+
+- Automatic retries for transient failures
+- Detailed error messages
+- Console logging for troubleshooting
 
 ## API Configuration
 
