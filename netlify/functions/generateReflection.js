@@ -72,7 +72,9 @@ exports.handler = async function(event, context) {
 
 async function handleVerseSearch(query, headers) {
   try {
-    // Improve the system prompt to be more explicit about proper formatting
+    console.log('Starting verse search for query:', query);
+    
+    // Improve the system prompt with clearer formatting instructions without specific examples
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -96,19 +98,21 @@ IMPORTANT: You must respond with ONLY clean, valid JSON in exactly this format w
   ]
 }
 
-For topics like Passover, Christmas, or other biblical events, include verses that describe the event and its significance.
+DO NOT include any markdown formatting, code blocks, or explanatory text.
+DO NOT surround your response with backticks.
+ONLY respond with the raw JSON object - nothing before, nothing after.
+
+For topics about biblical events, include verses that describe the event and its significance.
 For Bible characters, include verses about key moments in their life and their relationship with God.
 For Bible books, include key verses that capture the main themes of the book.
-For concepts or topics, include verses that directly address or illustrate the topic.
-
-Remember, respond with ONLY the JSON object - nothing before, nothing after.`
+For concepts or topics, include verses that directly address or illustrate the topic.`
           },
           {
             role: "user",
             content: `Find relevant Bible verses for: ${query}`
           }
         ],
-        temperature: 0.5 // Lowering temperature for more consistent outputs
+        temperature: 0.3 // Using a lower temperature for more consistent formatting
       })
     });
 
@@ -133,18 +137,48 @@ Remember, respond with ONLY the JSON object - nothing before, nothing after.`
     let result;
     
     try {
-      // First attempt to parse the response as is
+      // Multi-stage parsing approach with advanced cleanup
+      
+      // 1. First attempt direct parsing
       try {
         result = JSON.parse(contentString);
       } catch (initialParseError) {
-        // If direct parsing fails, try to extract just the JSON part
-        // This handles cases where the AI outputs extra text before/after the JSON
-        const jsonMatch = contentString.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          result = JSON.parse(jsonMatch[0]);
-          console.log('Extracted JSON from AI response');
-        } else {
-          throw initialParseError;
+        console.log('Initial JSON parsing failed, attempting cleanup');
+        
+        // 2. Try to clean up the response
+        let cleanedContent = contentString;
+        
+        // Remove any markdown code blocks
+        cleanedContent = cleanedContent
+          .replace(/```json/g, '')
+          .replace(/```/g, '')
+          .trim();
+        
+        // Try to extract just the JSON object if there's other text
+        const jsonRegex = /(\{[\s\S]*\})/g;
+        const jsonMatch = cleanedContent.match(jsonRegex);
+        
+        if (jsonMatch && jsonMatch.length > 0) {
+          cleanedContent = jsonMatch[0];
+          console.log('Extracted JSON object from mixed content');
+        }
+        
+        // 3. Try parsing with cleaned content
+        try {
+          result = JSON.parse(cleanedContent);
+          console.log('Successfully parsed JSON after cleaning');
+        } catch (cleanParseError) {
+          // 4. Last resort - try to fix common JSON syntax issues
+          try {
+            // Replace single quotes with double quotes (common GPT error)
+            const doubleQuoteContent = cleanedContent.replace(/'/g, '"');
+            result = JSON.parse(doubleQuoteContent);
+            console.log('Successfully parsed JSON after replacing quotes');
+          } catch (fixedParseError) {
+            console.error('All JSON parsing attempts failed');
+            console.error('Clean content attempt:', cleanedContent);
+            throw initialParseError; // Throw original error if all attempts fail
+          }
         }
       }
       
@@ -164,6 +198,8 @@ Remember, respond with ONLY the JSON object - nothing before, nothing after.`
       if (result.verses.length === 0) {
         throw new Error('No valid verses returned from AI');
       }
+      
+      console.log(`Successfully parsed ${result.verses.length} verses for query "${query}"`);
     } catch (parseError) {
       console.error('AI response parsing error:', parseError);
       console.error('Original response content:', contentString);
