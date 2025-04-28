@@ -15,7 +15,8 @@ An interactive web application that helps users find relevant Bible verses for a
 
 ## Recent Improvements
 
-- **Enhanced Reliability**: Implemented automatic retry mechanism for Scripture searches
+- **Enhanced Reliability**: Implemented automatic retry mechanism for both Scripture searches and reflection generation
+- **Visual Retry Feedback**: Added user-friendly indicators showing retry progress
 - **Robust JSON Parsing**: Improved handling of complex queries with advanced parsing techniques
 - **Modern UI**: Updated with cleaner layout, visual feedback, and improved user experience
 - **Loading States**: Added loading indicators for a better user experience during searches

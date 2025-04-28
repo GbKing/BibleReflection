@@ -374,137 +374,168 @@
             const reflectionDiv = document.getElementById('reflection');
             reflectionDiv.innerHTML = '<h2>Reflection & Prayer</h2><p class="loading">Generating reflection and prayer...</p>';
 
-            try {
-                console.log('Sending verses for reflection:', verses.length);
-                
-                // Determine if we're running locally or on Netlify
-                const isLocal = window.location.hostname === 'localhost' || 
-                                window.location.hostname === '127.0.0.1';
-                
-                if (isLocal) {
-                    // Use the original direct approach for local development
-                    const response = await fetch('/api/generateReflection', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({ 
-                            topic, 
-                            verses,
-                            type: 'GENERATE_REFLECTION'
-                        })
-                    });
+            // Add retry configuration (similar to findBibleVerses)
+            const maxRetries = 3;
+            const retryDelay = 2000; // 2 seconds between retries
+            let retries = 0;
+            let lastError = null;
 
-                    if (!response.ok) {
-                        const errorData = await response.json();
-                        console.error('Server error response:', errorData);
-                        throw new Error(errorData.message || 'Failed to generate reflection');
-                    }
-
-                    const data = await response.json();
+            while (retries < maxRetries) {
+                try {
+                    console.log('Sending verses for reflection:', verses.length);
+                    console.log(`Reflection attempt ${retries + 1} of ${maxRetries}`);
                     
-                    if (!data || !data.result) {
-                        throw new Error('Invalid response format');
-                    }
+                    // Determine if we're running locally or on Netlify
+                    const isLocal = window.location.hostname === 'localhost' || 
+                                    window.location.hostname === '127.0.0.1';
                     
-                    reflectionDiv.innerHTML = `
-                        <h2>Reflection & Prayer</h2>
-                        <div class="reflection-content">${data.result.replace(/\n/g, '<br>')}</div>
-                    `;
-                } else {
-                    // Use the new asynchronous approach for production
-                    // Start the reflection generation process
-                    const startResponse = await fetch('/api/reflectionStatus', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({ 
-                            topic, 
-                            verses
-                        })
-                    });
-
-                    if (!startResponse.ok) {
-                        const errorData = await startResponse.json();
-                        throw new Error(errorData.message || 'Failed to start reflection generation');
-                    }
-
-                    const startData = await startResponse.json();
-                    const reflectionId = startData.id;
-                    
-                    // Set up polling to check status
-                    let attempts = 0;
-                    const maxAttempts = 30;  // 30 seconds of polling at 1s intervals
-                    
-                    const checkStatus = async () => {
-                        attempts++;
-                        
-                        if (attempts > maxAttempts) {
-                            throw new Error('Reflection generation is taking longer than expected. Please try again.');
-                        }
-                        
-                        const statusResponse = await fetch(`/api/reflectionStatus?id=${reflectionId}`, {
-                            method: 'GET',
+                    if (isLocal) {
+                        // Use the original direct approach for local development
+                        const response = await fetch('/api/generateReflection', {
+                            method: 'POST',
                             headers: {
                                 'Content-Type': 'application/json'
-                            }
+                            },
+                            body: JSON.stringify({ 
+                                topic, 
+                                verses,
+                                type: 'GENERATE_REFLECTION'
+                            })
                         });
+
+                        if (!response.ok) {
+                            const errorData = await response.json();
+                            console.error('Server error response:', errorData);
+                            throw new Error(errorData.message || 'Failed to generate reflection');
+                        }
+
+                        const data = await response.json();
                         
-                        if (!statusResponse.ok) {
-                            throw new Error('Failed to check reflection status');
+                        if (!data || !data.result) {
+                            throw new Error('Invalid response format');
                         }
                         
-                        const statusData = await statusResponse.json();
+                        reflectionDiv.innerHTML = `
+                            <h2>Reflection & Prayer</h2>
+                            <div class="reflection-content">${data.result.replace(/\n/g, '<br>')}</div>
+                        `;
                         
-                        if (statusData.status === 'completed' && statusData.result) {
-                            // Reflection is ready
-                            reflectionDiv.innerHTML = `
-                                <h2>Reflection & Prayer</h2>
-                                <div class="reflection-content">${statusData.result.replace(/\n/g, '<br>')}</div>
-                            `;
-                            return true;
-                        } else if (statusData.status === 'error') {
-                            // Reflection generation failed
-                            throw new Error(statusData.error || 'Failed to generate reflection');
-                        } else {
-                            // Still processing, update message based on time spent
-                            const dots = '.'.repeat((attempts % 3) + 1);
-                            reflectionDiv.innerHTML = `<h2>Reflection & Prayer</h2><p class="loading">Generating reflection and prayer${dots}</p>`;
+                        // Success - exit retry loop
+                        return;
+                    } else {
+                        // Use the new asynchronous approach for production
+                        // Start the reflection generation process
+                        const startResponse = await fetch('/api/reflectionStatus', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({ 
+                                topic, 
+                                verses
+                            })
+                        });
+
+                        if (!startResponse.ok) {
+                            const errorData = await startResponse.json();
+                            throw new Error(errorData.message || 'Failed to start reflection generation');
+                        }
+
+                        const startData = await startResponse.json();
+                        const reflectionId = startData.id;
+                        
+                        // Set up polling to check status
+                        let attempts = 0;
+                        const maxAttempts = 30;  // 30 seconds of polling at 1s intervals
+                        
+                        const checkStatus = async () => {
+                            attempts++;
                             
-                            // Continue polling
-                            return false;
-                        }
-                    };
-                    
-                    // Start polling
-                    return new Promise((resolve, reject) => {
-                        const poll = async () => {
-                            try {
-                                const done = await checkStatus();
-                                if (done) {
-                                    resolve();
-                                } else {
-                                    setTimeout(poll, 1000); // Check every second
+                            if (attempts > maxAttempts) {
+                                throw new Error('Reflection generation is taking longer than expected. Please try again.');
+                            }
+                            
+                            const statusResponse = await fetch(`/api/reflectionStatus?id=${reflectionId}`, {
+                                method: 'GET',
+                                headers: {
+                                    'Content-Type': 'application/json'
                                 }
-                            } catch (error) {
-                                reject(error);
+                            });
+                            
+                            if (!statusResponse.ok) {
+                                throw new Error('Failed to check reflection status');
+                            }
+                            
+                            const statusData = await statusResponse.json();
+                            
+                            if (statusData.status === 'completed' && statusData.result) {
+                                // Reflection is ready
+                                reflectionDiv.innerHTML = `
+                                    <h2>Reflection & Prayer</h2>
+                                    <div class="reflection-content">${statusData.result.replace(/\n/g, '<br>')}</div>
+                                `;
+                                return true;
+                            } else if (statusData.status === 'error') {
+                                // Reflection generation failed
+                                throw new Error(statusData.error || 'Failed to generate reflection');
+                            } else {
+                                // Still processing, update message based on time spent
+                                const dots = '.'.repeat((attempts % 3) + 1);
+                                reflectionDiv.innerHTML = `<h2>Reflection & Prayer</h2><p class="loading">Generating reflection and prayer${dots}</p>`;
+                                
+                                // Continue polling
+                                return false;
                             }
                         };
                         
-                        poll();
-                    });
+                        // Start polling
+                        try {
+                            await new Promise((resolve, reject) => {
+                                const poll = async () => {
+                                    try {
+                                        const done = await checkStatus();
+                                        if (done) {
+                                            resolve();
+                                        } else {
+                                            setTimeout(poll, 1000); // Check every second
+                                        }
+                                    } catch (error) {
+                                        reject(error);
+                                    }
+                                };
+                                
+                                poll();
+                            });
+                            
+                            // If we get here, polling completed successfully
+                            return;
+                        } catch (pollingError) {
+                            // Polling failed, throw the error to trigger a retry
+                            throw pollingError;
+                        }
+                    }
+                } catch (error) {
+                    lastError = error;
+                    retries++;
+                    
+                    if (retries < maxRetries) {
+                        console.log(`Reflection generation attempt ${retries} failed. Retrying in ${retryDelay}ms...`);
+                        reflectionDiv.innerHTML = `<h2>Reflection & Prayer</h2><p class="loading">Retry ${retries}/${maxRetries}: Generating reflection...</p>`;
+                        await new Promise(resolve => setTimeout(resolve, retryDelay));
+                    }
                 }
-            } catch (error) {
-                reflectionDiv.innerHTML = `
-                    <h2>Reflection & Prayer</h2>
-                    <div class="error">
-                        <p>Sorry, something went wrong while generating the reflection.</p>
-                        <p>Error: ${error.message}</p>
-                    </div>
-                `;
-                console.error('Reflection generation error:', error);
             }
+
+            // If we get here, all retries failed
+            console.error(`All ${maxRetries} reflection generation attempts failed:`, lastError);
+            reflectionDiv.innerHTML = `
+                <h2>Reflection & Prayer</h2>
+                <div class="error">
+                    <p>Sorry, something went wrong while generating the reflection.</p>
+                    <p>Error: ${lastError ? lastError.message : 'Unknown error'}</p>
+                    <p>Please try clicking "Find Scriptures" again.</p>
+                </div>
+            `;
         }
 
         document.getElementById('findScriptures').addEventListener('click', async function() {
