@@ -512,8 +512,22 @@
             const button = this;
             const query = document.getElementById('topic').value.trim();
 
+            // Enhanced input validation
             if (!query) {
                 alert('Please enter a topic, book, or character from the Bible');
+                return;
+            }
+            
+            // Add length limit to prevent abuse
+            if (query.length > 100) {
+                alert('Please enter a shorter query (maximum 100 characters)');
+                return;
+            }
+            
+            // Basic content filtering for inappropriate content
+            const sensitiveTerms = ['inappropriate', 'offensive', 'obscene'];
+            if (sensitiveTerms.some(term => query.toLowerCase().includes(term))) {
+                alert('Please use appropriate language for Bible reflection topics');
                 return;
             }
 

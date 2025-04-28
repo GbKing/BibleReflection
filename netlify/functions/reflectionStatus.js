@@ -3,8 +3,88 @@ const fetch = require('node-fetch');
 // In-memory storage for reflection generation status
 // Use a more unique name to prevent conflicts with other functions
 const REFLECTION_STORE = {};
+const RATE_LIMIT_STORE = {};
+const RATE_WINDOW_MS = 60 * 1000; // 1 minute window
+const MAX_REQUESTS_PER_IP = 5; // 5 requests per minute
+const MAX_STORE_AGE_MS = 30 * 60 * 1000; // 30 minutes max storage
+
+// Helper function to check rate limits
+function checkRateLimit(ip) {
+  const now = Date.now();
+  
+  // Clean up old entries
+  Object.keys(RATE_LIMIT_STORE).forEach(key => {
+    if (now - RATE_LIMIT_STORE[key].timestamp > RATE_WINDOW_MS) {
+      delete RATE_LIMIT_STORE[key];
+    }
+  });
+  
+  // Initialize if this IP is new
+  if (!RATE_LIMIT_STORE[ip]) {
+    RATE_LIMIT_STORE[ip] = {
+      count: 0,
+      timestamp: now
+    };
+  }
+  
+  // If IP exists but timestamp is old, reset the counter
+  if (now - RATE_LIMIT_STORE[ip].timestamp > RATE_WINDOW_MS) {
+    RATE_LIMIT_STORE[ip].count = 0;
+    RATE_LIMIT_STORE[ip].timestamp = now;
+  }
+  
+  // Increment request count
+  RATE_LIMIT_STORE[ip].count++;
+  
+  // Return true if rate limit exceeded
+  return RATE_LIMIT_STORE[ip].count > MAX_REQUESTS_PER_IP;
+}
+
+// Sanitize inputs to prevent injection attacks
+function sanitizeInput(input, maxLength = 100) {
+  if (typeof input !== 'string') {
+    return '';
+  }
+  return input.trim().substring(0, maxLength);
+}
+
+// Validate and sanitize verse objects
+function validateVerses(verses, maxVerses = 10) {
+  if (!Array.isArray(verses)) {
+    return [];
+  }
+  
+  return verses
+    .filter(verse => 
+      verse && 
+      typeof verse === 'object' && 
+      typeof verse.reference === 'string' && 
+      typeof verse.text === 'string'
+    )
+    .map(verse => ({
+      reference: sanitizeInput(verse.reference, 50),
+      text: sanitizeInput(verse.text, 500)
+    }))
+    .slice(0, maxVerses); // Limit total number of verses
+}
+
+// Clean up stale entries in the reflection store
+function cleanupStaleEntries() {
+  const now = Date.now();
+  Object.keys(REFLECTION_STORE).forEach(id => {
+    const entry = REFLECTION_STORE[id];
+    // Convert ISO string to timestamp for comparison
+    const startTime = new Date(entry.started).getTime();
+    if (now - startTime > MAX_STORE_AGE_MS) {
+      delete REFLECTION_STORE[id];
+    }
+  });
+}
 
 exports.handler = async function(event, context) {
+  // Clean up stale entries periodically
+  cleanupStaleEntries();
+  
   // Set CORS headers
   const headers = {
     'Access-Control-Allow-Origin': '*',
@@ -19,14 +99,50 @@ exports.handler = async function(event, context) {
       headers
     };
   }
+  
+  // Get client IP for rate limiting
+  const clientIP = event.headers['client-ip'] || 
+                 event.headers['x-forwarded-for'] || 
+                 'unknown-ip';
+  
+  // Check rate limit
+  if (checkRateLimit(clientIP)) {
+    console.log(`Rate limit exceeded for IP: ${clientIP}`);
+    return {
+      statusCode: 429,
+      headers: {
+        ...headers,
+        'Content-Type': 'application/json',
+        'Retry-After': '60'
+      },
+      body: JSON.stringify({
+        error: 'Too many requests',
+        message: 'Please try again in a minute'
+      })
+    };
+  }
 
   if (event.httpMethod === 'POST') {
     // Start a new reflection generation process
     try {
+      if (!event.body) {
+        throw new Error('Missing request body');
+      }
+      
       const body = JSON.parse(event.body);
       
       if (!body.topic || !body.verses) {
         throw new Error('Missing required parameters');
+      }
+      
+      // Sanitize topic
+      const sanitizedTopic = sanitizeInput(body.topic);
+      
+      // Validate and sanitize verses
+      const validatedVerses = validateVerses(body.verses);
+      
+      if (validatedVerses.length === 0) {
+        throw new Error('No valid verses provided');
       }
       
       // Generate unique ID for this reflection request
@@ -41,7 +157,7 @@ exports.handler = async function(event, context) {
       };
       
       // Start async generation (don't await)
-      generateReflection(reflectionId, body.topic, body.verses);
+      generateReflection(reflectionId, sanitizedTopic, validatedVerses);
       
       // Return the ID immediately
       return {
@@ -56,6 +172,7 @@ exports.handler = async function(event, context) {
         })
       };
     } catch (error) {
+      console.error('Error starting reflection:', error.message);
       return {
         statusCode: 400,
         headers: {
@@ -64,14 +181,14 @@ exports.handler = async function(event, context) {
         },
         body: JSON.stringify({
           error: 'Invalid request',
-          message: error.message
+          message: 'Please provide valid topic and verses'
         })
       };
     }
   } else if (event.httpMethod === 'GET') {
     // Check status of a reflection generation process
     try {
-      const reflectionId = event.queryStringParameters?.id;
+      const reflectionId = sanitizeInput(event.queryStringParameters?.id || '');
       
       if (!reflectionId || !REFLECTION_STORE[reflectionId]) {
         return {
@@ -89,7 +206,16 @@ exports.handler = async function(event, context) {
       
       const reflection = REFLECTION_STORE[reflectionId];
       
-      // If it's completed, we can delete from the store after sending
+      // Create a safe response object that doesn't include internal details
+      const safeResponse = {
+        status: reflection.status,
+        // Only return result if status is completed
+        result: reflection.status === 'completed' ? reflection.result : null,
+        // Provide generic error message rather than exposing internal errors
+        error: reflection.status === 'error' ? 'An error occurred' : null
+      };
+      
+      // If it's completed or error, we can delete from the store after sending
       const shouldDelete = ['completed', 'error'].includes(reflection.status);
       const response = {
         statusCode: 200,
@@ -97,10 +223,10 @@ exports.handler = async function(event, context) {
           ...headers,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify(reflection)
+        body: JSON.stringify(safeResponse)
       };
       
-      // Clean up old entries (in real app, use proper TTL mechanism)
+      // Clean up completed entries
       if (shouldDelete) {
         setTimeout(() => {
           delete REFLECTION_STORE[reflectionId];
@@ -109,6 +235,7 @@ exports.handler = async function(event, context) {
       
       return response;
     } catch (error) {
+      console.error('Error checking reflection status:', error.message);
       return {
         statusCode: 500,
         headers: {
@@ -117,7 +244,7 @@ exports.handler = async function(event, context) {
         },
         body: JSON.stringify({
           error: 'Server error',
-          message: error.message
+          message: 'Something went wrong. Please try again.'
         })
       };
     }

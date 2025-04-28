@@ -1,5 +1,51 @@
 const fetch = require('node-fetch');
 
+// Simple in-memory rate limiting store
+// Note: This is reset whenever the function is re-deployed
+const RATE_LIMIT_STORE = {};
+const RATE_WINDOW_MS = 60 * 1000; // 1 minute window
+const MAX_REQUESTS_PER_IP = 5; // 5 requests per minute
+
+// Helper function to check rate limits
+function checkRateLimit(ip) {
+  const now = Date.now();
+  
+  // Clean up old entries
+  Object.keys(RATE_LIMIT_STORE).forEach(key => {
+    if (now - RATE_LIMIT_STORE[key].timestamp > RATE_WINDOW_MS) {
+      delete RATE_LIMIT_STORE[key];
+    }
+  });
+  
+  // Initialize if this IP is new
+  if (!RATE_LIMIT_STORE[ip]) {
+    RATE_LIMIT_STORE[ip] = {
+      count: 0,
+      timestamp: now
+    };
+  }
+  
+  // If IP exists but timestamp is old, reset the counter
+  if (now - RATE_LIMIT_STORE[ip].timestamp > RATE_WINDOW_MS) {
+    RATE_LIMIT_STORE[ip].count = 0;
+    RATE_LIMIT_STORE[ip].timestamp = now;
+  }
+  
+  // Increment request count
+  RATE_LIMIT_STORE[ip].count++;
+  
+  // Return true if rate limit exceeded
+  return RATE_LIMIT_STORE[ip].count > MAX_REQUESTS_PER_IP;
+}
+
+// Sanitize inputs to prevent injection attacks
+function sanitizeInput(input, maxLength = 100) {
+  if (typeof input !== 'string') {
+    return '';
+  }
+  return input.trim().substring(0, maxLength);
+}
+
 /**
  * Netlify serverless function that:
  * 1. Uses GPT-4-turbo to find relevant Bible verses for any topic, book, or character
@@ -44,10 +90,47 @@ exports.handler = async function(event, context) {
   }
 
   try {
+    // Get client IP for rate limiting
+    const clientIP = event.headers['client-ip'] || 
+                    event.headers['x-forwarded-for'] || 
+                    'unknown-ip';
+    
+    // Check rate limit
+    if (checkRateLimit(clientIP)) {
+      console.log(`Rate limit exceeded for IP: ${clientIP}`);
+      return {
+        statusCode: 429,
+        headers: {
+          ...headers,
+          'Content-Type': 'application/json',
+          'Retry-After': '60'
+        },
+        body: JSON.stringify({
+          error: 'Too many requests',
+          message: 'Please try again in a minute'
+        })
+      };
+    }
+
+    // Parse and validate request body
+    if (!event.body) {
+      throw new Error('Missing request body');
+    }
+    
     const body = JSON.parse(event.body);
     
+    if (!body.type || typeof body.type !== 'string') {
+      throw new Error('Invalid request type');
+    }
+    
     if (body.type === "SEARCH_VERSES") {
-      return await handleVerseSearch(body.query, headers);
+      if (!body.query || typeof body.query !== 'string') {
+        throw new Error('Invalid query parameter');
+      }
+      
+      // Sanitize query
+      const query = sanitizeInput(body.query);
+      return await handleVerseSearch(query, headers);
     } else if (body.type === "GENERATE_REFLECTION") {
       return await handleReflectionGeneration(body.topic, body.verses, headers);
     } else {
@@ -64,7 +147,7 @@ exports.handler = async function(event, context) {
       },
       body: JSON.stringify({
         error: 'Function failed',
-        message: error.message
+        message: 'An error occurred while processing your request'
       })
     };
   }
@@ -117,8 +200,9 @@ For concepts or topics, include verses that directly address or illustrate the t
     });
 
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error?.message || 'Failed to search verses');
+      // Don't log the entire error response as it might contain sensitive information
+      console.error('OpenAI API error status:', response.status);
+      throw new Error('Failed to search verses');
     }
 
     const data = await response.json();
@@ -127,12 +211,12 @@ For concepts or topics, include verses that directly address or illustrate the t
     console.log('API response received:', data.choices && data.choices.length ? 'Valid choices' : 'No choices');
     
     if (!data.choices || !data.choices[0] || !data.choices[0].message || !data.choices[0].message.content) {
-      console.error('Invalid OpenAI API response structure:', JSON.stringify(data).substring(0, 200));
+      console.error('Invalid OpenAI API response structure');
       throw new Error('Invalid response structure from OpenAI API');
     }
     
     const contentString = data.choices[0].message.content.trim();
-    console.log('Response content preview:', contentString.substring(0, 50) + '...');
+    console.log('Response content preview length:', contentString.length);
     
     let result;
     
@@ -176,7 +260,6 @@ For concepts or topics, include verses that directly address or illustrate the t
             console.log('Successfully parsed JSON after replacing quotes');
           } catch (fixedParseError) {
             console.error('All JSON parsing attempts failed');
-            console.error('Clean content attempt:', cleanedContent);
             throw initialParseError; // Throw original error if all attempts fail
           }
         }
@@ -193,7 +276,11 @@ For concepts or topics, include verses that directly address or illustrate the t
         typeof verse === 'object' && 
         typeof verse.reference === 'string' && 
         typeof verse.text === 'string'
-      );
+      ).map(verse => ({
+        // Sanitize each field
+        reference: sanitizeInput(verse.reference, 50),
+        text: sanitizeInput(verse.text, 500)
+      })).slice(0, 15); // Limit to maximum 15 verses
       
       if (result.verses.length === 0) {
         throw new Error('No valid verses returned from AI');
@@ -201,9 +288,8 @@ For concepts or topics, include verses that directly address or illustrate the t
       
       console.log(`Successfully parsed ${result.verses.length} verses for query "${query}"`);
     } catch (parseError) {
-      console.error('AI response parsing error:', parseError);
-      console.error('Original response content:', contentString);
-      throw new Error('Failed to parse AI response - ' + parseError.message);
+      console.error('AI response parsing error:', parseError.message);
+      throw new Error('Failed to parse AI response');
     }
 
     return {
@@ -216,7 +302,6 @@ For concepts or topics, include verses that directly address or illustrate the t
     };
   } catch (error) {
     console.error('Verse search error:', error.message);
-    console.error('Error stack:', error.stack);
     return {
       statusCode: 500,
       headers: {
@@ -225,8 +310,7 @@ For concepts or topics, include verses that directly address or illustrate the t
       },
       body: JSON.stringify({
         error: 'Failed to find verses',
-        message: error.message,
-        query: query // Include the query to help with debugging
+        message: 'Could not find Bible verses for your query. Please try again.'
       })
     };
   }
@@ -234,7 +318,7 @@ For concepts or topics, include verses that directly address or illustrate the t
 
 async function handleReflectionGeneration(topic, verses, headers) {
   try {
-    // Validate input
+    // Validate and sanitize input
     if (!topic || typeof topic !== 'string') {
       throw new Error('Invalid topic provided');
     }
@@ -243,33 +327,48 @@ async function handleReflectionGeneration(topic, verses, headers) {
       throw new Error('Invalid verses data provided');
     }
     
-    // Limit number of verses to prevent token limit issues (max 10 verses)
+    // Sanitize topic
+    const sanitizedTopic = sanitizeInput(topic);
+    
+    // Limit number of verses to prevent token limit issues and sanitize each verse
     let versesToUse = verses;
-    if (Array.isArray(verses) && verses.length > 10) {
-      console.log(`Limiting from ${verses.length} verses to 10 verses to prevent token limit issues`);
-      versesToUse = verses.slice(0, 10);
+    if (Array.isArray(verses)) {
+      if (verses.length > 10) {
+        console.log(`Limiting from ${verses.length} verses to 10 verses to prevent token limit issues`);
+      }
+      
+      // Take maximum 10 verses and sanitize them
+      versesToUse = verses
+        .slice(0, 10)
+        .map(v => {
+          if (!v || !v.reference || !v.text) {
+            return null;
+          }
+          return {
+            reference: sanitizeInput(v.reference, 50),
+            text: sanitizeInput(v.text, 500)
+          };
+        })
+        .filter(Boolean); // Remove any null entries
+    } else if (typeof verses === 'string') {
+      // If string input, just sanitize it
+      versesToUse = sanitizeInput(verses, 5000);
     }
 
+    // Ensure we have verses to work with
     const versesText = Array.isArray(versesToUse) 
-      ? versesToUse.map(v => {
-          if (!v || !v.reference || !v.text) {
-            console.warn('Invalid verse object found:', v);
-            return '';
-          }
-          return `${v.reference}: ${v.text}`;
-        }).filter(Boolean).join('\n')
+      ? versesToUse.map(v => `${v.reference}: ${v.text}`).join('\n')
       : versesToUse;
 
     if (!versesText.trim()) {
       throw new Error('No valid verse text available');
     }
 
-    console.log('Generating reflection for topic:', topic);
+    console.log('Generating reflection for topic:', sanitizedTopic);
     console.log('Using verses count:', Array.isArray(versesToUse) ? versesToUse.length : 'text input');
-    console.log('First verse sample:', versesText.split('\n')[0]);
     console.log('API Key defined:', !!process.env.OPENAI_API_KEY);
 
-    // Prepare API request
+    // Prepare API request with sanitized inputs
     const requestBody = {
       model: "gpt-4-turbo",
       messages: [
@@ -283,7 +382,7 @@ End with a heartfelt prayer that relates to the topic and the spiritual journey 
         },
         {
           role: "user",
-          content: `Write a deep, thoughtful Christian reflection on the topic of "${topic}". 
+          content: `Write a deep, thoughtful Christian reflection on the topic of "${sanitizedTopic}". 
           
 Some relevant scriptures for this topic include:
 
@@ -310,26 +409,19 @@ End with a meaningful prayer related to this topic.`
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      console.error('OpenAI API error response:', errorText);
-      console.error('Response status:', response.status);
-      console.error('Response headers:', JSON.stringify([...response.headers.entries()]));
-      
-      try {
-        const error = JSON.parse(errorText);
-        throw new Error(error.error?.message || `OpenAI API error: HTTP ${response.status}`);
-      } catch (parseError) {
-        throw new Error(`Failed to generate reflection: HTTP ${response.status} - ${errorText.substring(0, 200)}`);
-      }
+      console.error('OpenAI API error response status:', response.status);
+      throw new Error(`OpenAI API error: HTTP ${response.status}`);
     }
 
     const data = await response.json();
     
     if (!data || !data.choices || !data.choices[0] || !data.choices[0].message || !data.choices[0].message.content) {
-      console.error('Invalid OpenAI response format:', data);
+      console.error('Invalid OpenAI response format');
       throw new Error('Invalid response from OpenAI API');
     }
     
+    // Sanitize the reflection content before returning
+    const sanitizedResult = sanitizeInput(data.choices[0].message.content, 10000);
     console.log('Reflection generated successfully');
     
     return {
@@ -339,12 +431,11 @@ End with a meaningful prayer related to this topic.`
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        result: data.choices[0].message.content
+        result: sanitizedResult
       })
     };
   } catch (error) {
     console.error('Reflection generation error:', error.message);
-    console.error('Error stack:', error.stack);
     return {
       statusCode: 500,
       headers: {
@@ -353,8 +444,7 @@ End with a meaningful prayer related to this topic.`
       },
       body: JSON.stringify({
         error: 'Failed to generate reflection',
-        message: error.message,
-        details: process.env.NODE_ENV !== 'production' ? error.stack : undefined
+        message: 'Unable to generate a reflection at this time. Please try again later.'
       })
     };
   }
