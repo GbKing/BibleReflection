@@ -72,6 +72,7 @@ exports.handler = async function(event, context) {
 
 async function handleVerseSearch(query, headers) {
   try {
+    // Improve the system prompt to be more explicit about proper formatting
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -85,7 +86,7 @@ async function handleVerseSearch(query, headers) {
             role: "system",
             content: `You are a Bible scholar helping find relevant Bible verses. For any query (topic, book, character, event, or concept), return at least 5 relevant verses.
 
-IMPORTANT: You must respond with valid JSON in exactly this format, with no additional text before or after:
+IMPORTANT: You must respond with ONLY clean, valid JSON in exactly this format with no additional text:
 {
   "verses": [
     {
@@ -98,14 +99,16 @@ IMPORTANT: You must respond with valid JSON in exactly this format, with no addi
 For topics like Passover, Christmas, or other biblical events, include verses that describe the event and its significance.
 For Bible characters, include verses about key moments in their life and their relationship with God.
 For Bible books, include key verses that capture the main themes of the book.
-For concepts or topics, include verses that directly address or illustrate the topic.`
+For concepts or topics, include verses that directly address or illustrate the topic.
+
+Remember, respond with ONLY the JSON object - nothing before, nothing after.`
           },
           {
             role: "user",
             content: `Find relevant Bible verses for: ${query}`
           }
         ],
-        temperature: 0.7
+        temperature: 0.5 // Lowering temperature for more consistent outputs
       })
     });
 
@@ -115,18 +118,42 @@ For concepts or topics, include verses that directly address or illustrate the t
     }
 
     const data = await response.json();
+    
+    // Add logging to help troubleshoot any response content issues
+    console.log('API response received:', data.choices && data.choices.length ? 'Valid choices' : 'No choices');
+    
+    if (!data.choices || !data.choices[0] || !data.choices[0].message || !data.choices[0].message.content) {
+      console.error('Invalid OpenAI API response structure:', JSON.stringify(data).substring(0, 200));
+      throw new Error('Invalid response structure from OpenAI API');
+    }
+    
+    const contentString = data.choices[0].message.content.trim();
+    console.log('Response content preview:', contentString.substring(0, 50) + '...');
+    
     let result;
     
     try {
-      // Try to parse the LLM's response as JSON
-      result = JSON.parse(data.choices[0].message.content);
+      // First attempt to parse the response as is
+      try {
+        result = JSON.parse(contentString);
+      } catch (initialParseError) {
+        // If direct parsing fails, try to extract just the JSON part
+        // This handles cases where the AI outputs extra text before/after the JSON
+        const jsonMatch = contentString.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          result = JSON.parse(jsonMatch[0]);
+          console.log('Extracted JSON from AI response');
+        } else {
+          throw initialParseError;
+        }
+      }
       
       // Validate the response structure
       if (!result.verses || !Array.isArray(result.verses)) {
-        throw new Error('Invalid response format from AI');
+        throw new Error('Invalid response format from AI - missing verses array');
       }
       
-      // Validate each verse object
+      // Validate each verse object and filter out invalid entries
       result.verses = result.verses.filter(verse => 
         verse && 
         typeof verse === 'object' && 
@@ -135,11 +162,12 @@ For concepts or topics, include verses that directly address or illustrate the t
       );
       
       if (result.verses.length === 0) {
-        throw new Error('No valid verses returned');
+        throw new Error('No valid verses returned from AI');
       }
     } catch (parseError) {
-      console.error('AI response parsing error:', data.choices[0].message.content);
-      throw new Error('Failed to parse AI response');
+      console.error('AI response parsing error:', parseError);
+      console.error('Original response content:', contentString);
+      throw new Error('Failed to parse AI response - ' + parseError.message);
     }
 
     return {
@@ -151,7 +179,8 @@ For concepts or topics, include verses that directly address or illustrate the t
       body: JSON.stringify(result)
     };
   } catch (error) {
-    console.error('Verse search error:', error);
+    console.error('Verse search error:', error.message);
+    console.error('Error stack:', error.stack);
     return {
       statusCode: 500,
       headers: {
@@ -160,7 +189,8 @@ For concepts or topics, include verses that directly address or illustrate the t
       },
       body: JSON.stringify({
         error: 'Failed to find verses',
-        message: error.message
+        message: error.message,
+        query: query // Include the query to help with debugging
       })
     };
   }

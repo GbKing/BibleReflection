@@ -155,24 +155,46 @@
 
     <script>
         async function findBibleVerses(query) {
-            // Always include the type parameter for the Scripture search
-            const response = await fetch('/api/generateReflection', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ 
-                    query,
-                    type: 'SEARCH_VERSES'
-                })
-            });
+            // Add retry configuration
+            const maxRetries = 3;
+            const retryDelay = 1000; // 1 second between retries
+            let retries = 0;
+            let lastError = null;
 
-            if (!response.ok) {
-                const error = await response.json();
-                throw new Error(error.message || 'Failed to find verses');
+            while (retries < maxRetries) {
+                try {
+                    const response = await fetch('/api/generateReflection', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ 
+                            query,
+                            type: 'SEARCH_VERSES'
+                        })
+                    });
+
+                    if (!response.ok) {
+                        const error = await response.json();
+                        throw new Error(error.message || 'Failed to find verses');
+                    }
+
+                    return response.json();
+                } catch (error) {
+                    lastError = error;
+                    retries++;
+                    console.log(`Scripture search attempt ${retries} failed. Retrying in ${retryDelay}ms...`);
+                    
+                    // Only wait if we're going to retry
+                    if (retries < maxRetries) {
+                        await new Promise(resolve => setTimeout(resolve, retryDelay));
+                    }
+                }
             }
 
-            return response.json();
+            // If we get here, all retries failed
+            console.error(`All ${maxRetries} scripture search attempts failed:`, lastError);
+            throw lastError || new Error('Failed to find verses after multiple attempts');
         }
 
         async function generateReflectionAndPrayer(topic, verses) {
