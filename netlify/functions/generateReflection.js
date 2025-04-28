@@ -157,6 +157,9 @@ async function handleVerseSearch(query, headers) {
   try {
     console.log('Starting verse search for query:', query);
     
+    // Instead of using keyword lists to filter topics, we'll use the AI itself to determine if the topic
+    // can be addressed from a biblical perspective, similar to how the Bible app example works
+    
     // Set up retry parameters for OpenAI API calls
     const maxRetries = 3;
     let retryCount = 0;
@@ -168,7 +171,7 @@ async function handleVerseSearch(query, headers) {
     // Retry loop for handling rate limit errors
     while (retryCount <= maxRetries) {
       try {
-        // Improve the system prompt with clearer formatting instructions without specific examples
+        // First, we check if the query is something that can be addressed from a biblical perspective
         response = await fetch('https://api.openai.com/v1/chat/completions', {
           method: 'POST',
           headers: {
@@ -176,37 +179,35 @@ async function handleVerseSearch(query, headers) {
             'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
           },
           body: JSON.stringify({
-            model: "gpt-3.5-turbo", // Changed from gpt-4-turbo to gpt-3.5-turbo for cheaper testing
+            model: "gpt-3.5-turbo",
             messages: [
               {
                 role: "system",
-                content: `You are a Bible scholar helping find relevant Bible verses. For any query (topic, book, character, event, or concept), return at least 5 relevant verses.
+                content: `You are an assistant that evaluates whether a given topic or question can be addressed from a biblical or Christian perspective. Your task is to determine if the input can be meaningfully connected to:
 
-IMPORTANT: You must respond with ONLY clean, valid JSON in exactly this format with no additional text:
-{
-  "verses": [
-    {
-      "reference": "Book C:V",
-      "text": "Verse text here"
-    }
-  ]
-}
+1. Biblical teachings, principles, characters, events, or passages
+2. Christian theology, ethics, or spiritual practices
+3. Faith-based guidance that can be supported by scripture
 
-DO NOT include any markdown formatting, code blocks, or explanatory text.
-DO NOT surround your response with backticks.
-ONLY respond with the raw JSON object - nothing before, nothing after.
+If the query contains adult content, explicit material, hate speech, or content intended to harm, always return false.
 
-For topics about biblical events, include verses that describe the event and its significance.
-For Bible characters, include verses about key moments in their life and their relationship with God.
-For Bible books, include key verses that capture the main themes of the book.
-For concepts or topics, include verses that directly address or illustrate the topic.`
+For topics that aren't explicitly biblical but could be addressed through biblical principles (like modern issues, personal struggles, or contemporary figures), determine if there's a meaningful way to provide biblical guidance on the topic.
+
+Respond with a JSON object containing:
+- canBeAddressed: true or false
+- reason: A brief explanation of your decision
+
+For example:
+- For "How do I forgive someone who hurt me?", return {canBeAddressed: true, reason: "Forgiveness is a central biblical teaching found throughout scripture."}
+- For "Best cryptocurrencies to invest in", return {canBeAddressed: false, reason: "This is about financial investment specifics, not directly related to biblical principles."}
+- For a political figure like "Bill Clinton", you might return {canBeAddressed: true, reason: "While not mentioned in scripture, biblical principles about leadership and prayer for authority figures apply."}`
               },
               {
                 role: "user",
-                content: `Find relevant Bible verses for: ${query}`
+                content: `Can this query be addressed from a biblical perspective: "${query}"?`
               }
             ],
-            temperature: 0.3 // Using a lower temperature for more consistent formatting
+            temperature: 0.3
           })
         });
         
@@ -246,14 +247,137 @@ For concepts or topics, include verses that directly address or illustrate the t
     }
 
     if (!response.ok) {
-      // Don't log the entire error response as it might contain sensitive information
+      console.error('OpenAI API error status:', response.status);
+      throw new Error(`Failed to evaluate query (HTTP ${response.status})`);
+    }
+
+    data = await response.json();
+    
+    if (!data.choices || !data.choices[0] || !data.choices[0].message || !data.choices[0].message.content) {
+      console.error('Invalid OpenAI API response structure');
+      throw new Error('Invalid response structure from OpenAI API');
+    }
+    
+    // Parse the evaluation result
+    const evaluationContent = data.choices[0].message.content.trim();
+    let evaluation;
+    
+    try {
+      // Parse the JSON response
+      evaluation = JSON.parse(evaluationContent);
+    } catch (parseError) {
+      console.error('Failed to parse evaluation response:', parseError);
+      
+      // Try to extract JSON if it's wrapped in markdown or other text
+      const jsonMatch = evaluationContent.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        try {
+          evaluation = JSON.parse(jsonMatch[0]);
+        } catch (e) {
+          console.error('Failed to extract JSON from response');
+          throw new Error('Could not parse evaluation response');
+        }
+      } else {
+        throw new Error('Could not parse evaluation response');
+      }
+    }
+    
+    // If the query cannot be addressed from a biblical perspective, provide guidance
+    if (!evaluation.canBeAddressed) {
+      console.log(`Query cannot be addressed biblically: "${query}", Reason: ${evaluation.reason}`);
+      return {
+        statusCode: 200,
+        headers: {
+          ...headers,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          notBibleRelated: true,
+          message: "I'm happy to help with Bible-related questions. This topic doesn't appear to have a strong connection to biblical teachings or principles. If you'd like, you can ask about scriptures, biblical characters, Christian living, or how the Bible might provide guidance for specific life situations."
+        })
+      };
+    }
+    
+    console.log(`Query can be addressed biblically: "${query}", Reason: ${evaluation.reason}`);
+    
+    // Reset for the verse search request
+    retryCount = 0;
+    retryDelay = 2000;
+    
+    // Now proceed with finding relevant verses
+    while (retryCount <= maxRetries) {
+      try {
+        response = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+          },
+          body: JSON.stringify({
+            model: "gpt-3.5-turbo",
+            messages: [
+              {
+                role: "system",
+                content: `You are a Bible scholar helping find relevant Bible verses. For any query (topic, book, character, event, or concept), return at least 5 relevant verses.
+
+IMPORTANT: You must respond with ONLY clean, valid JSON in exactly this format with no additional text:
+{
+  "verses": [
+    {
+      "reference": "Book C:V",
+      "text": "Verse text here"
+    }
+  ]
+}
+
+DO NOT include any markdown formatting, code blocks, or explanatory text.
+DO NOT surround your response with backticks.
+ONLY respond with the raw JSON object - nothing before, nothing after.
+
+For topics about biblical events, include verses that describe the event and its significance.
+For Bible characters, include verses about key moments in their life and their relationship with God.
+For Bible books, include key verses that capture the main themes of the book.
+For concepts or topics, include verses that directly address or illustrate the topic.
+For modern topics not explicitly mentioned in the Bible, find verses that offer relevant principles or guidance.`
+              },
+              {
+                role: "user",
+                content: `Find relevant Bible verses for: ${query}`
+              }
+            ],
+            temperature: 0.3
+          })
+        });
+        
+        if (response.status === 429) {
+          const retryAfter = response.headers.get('retry-after');
+          const waitTime = retryAfter ? parseInt(retryAfter) * 1000 : retryDelay;
+          console.log(`OpenAI API rate limit hit. Retrying in ${waitTime/1000} seconds...`);
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+          retryCount++;
+          retryDelay *= 2;
+          continue;
+        }
+        
+        break;
+      } catch (fetchError) {
+        console.error('Fetch error:', fetchError);
+        if (retryCount >= maxRetries) {
+          throw fetchError;
+        }
+        retryCount++;
+        retryDelay *= 2;
+        await new Promise(resolve => setTimeout(resolve, retryDelay));
+      }
+    }
+
+    if (!response.ok) {
       console.error('OpenAI API error status:', response.status);
       throw new Error(`Failed to search verses (HTTP ${response.status})`);
     }
 
     data = await response.json();
     
-    // Add logging to help troubleshoot any response content issues
     console.log('API response received:', data.choices && data.choices.length ? 'Valid choices' : 'No choices');
     
     if (!data.choices || !data.choices[0] || !data.choices[0].message || !data.choices[0].message.content) {

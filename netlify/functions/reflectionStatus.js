@@ -44,7 +44,7 @@ function checkRateLimit(ip, requestType) {
 }
 
 // Sanitize inputs to prevent injection attacks
-function sanitizeInput(input, maxLength = 1000) {  // Increased default max length
+function sanitizeInput(input, maxLength = 1000) {
   if (typeof input !== 'string') {
     return '';
   }
@@ -82,6 +82,141 @@ function cleanupStaleEntries() {
       delete REFLECTION_STORE[id];
     }
   });
+}
+
+// AI-based topic evaluation function
+async function evaluateTopicWithAI(topic) {
+  if (!topic || typeof topic !== 'string' || topic.trim().length < 2) {
+    console.log('Topic is too short or invalid');
+    return { canBeAddressed: false, reason: 'Topic is too short or invalid' };
+  }
+
+  try {
+    console.log('Evaluating topic with AI:', topic);
+    
+    // Set up retry parameters for OpenAI API calls
+    const maxRetries = 2;
+    let retryCount = 0;
+    let retryDelay = 1000; // Start with 1 second delay
+    
+    let response;
+    let data;
+    
+    // Retry loop for handling rate limit errors
+    while (retryCount <= maxRetries) {
+      try {
+        response = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+          },
+          body: JSON.stringify({
+            model: "gpt-3.5-turbo",
+            messages: [
+              {
+                role: "system",
+                content: `You are an assistant that evaluates whether a given topic or question can be addressed from a biblical or Christian perspective. Your task is to determine if the input can be meaningfully connected to:
+
+1. Biblical teachings, principles, characters, events, or passages
+2. Christian theology, ethics, or spiritual practices
+3. Faith-based guidance that can be supported by scripture
+
+If the query contains adult content, explicit material, hate speech, or content intended to harm, always return false.
+
+For topics that aren't explicitly biblical but could be addressed through biblical principles (like modern issues, personal struggles, or contemporary figures), determine if there's a meaningful way to provide biblical guidance on the topic.
+
+Respond with a JSON object containing:
+- canBeAddressed: true or false
+- reason: A brief explanation of your decision
+
+For example:
+- For "How do I forgive someone who hurt me?", return {canBeAddressed: true, reason: "Forgiveness is a central biblical teaching found throughout scripture."}
+- For "Best cryptocurrencies to invest in", return {canBeAddressed: false, reason: "This is about financial investment specifics, not directly related to biblical principles."}
+- For a political figure like "Bill Clinton", you might return {canBeAddressed: true, reason: "While not mentioned in scripture, biblical principles about leadership and prayer for authority figures apply."}`
+              },
+              {
+                role: "user",
+                content: `Can this query be addressed from a biblical perspective: "${topic}"?`
+              }
+            ],
+            temperature: 0.3
+          })
+        });
+        
+        if (response.status === 429) {
+          const retryAfter = response.headers.get('retry-after');
+          const waitTime = retryAfter ? parseInt(retryAfter) * 1000 : retryDelay;
+          
+          console.log(`OpenAI API rate limit hit. Retrying in ${waitTime/1000} seconds...`);
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+          retryCount++;
+          retryDelay *= 2;
+          continue;
+        }
+        
+        break;
+      } catch (fetchError) {
+        console.error('Fetch error:', fetchError);
+        if (retryCount >= maxRetries) {
+          throw fetchError;
+        }
+        retryCount++;
+        retryDelay *= 2;
+        await new Promise(resolve => setTimeout(resolve, retryDelay));
+      }
+    }
+
+    if (!response.ok) {
+      console.error('OpenAI API error status:', response.status);
+      // On API error, fail gracefully by assuming the topic is valid
+      // This prevents blocking users due to API failures
+      console.log('Assuming topic is valid due to API error');
+      return { canBeAddressed: true, reason: 'API error, assuming valid topic' };
+    }
+
+    data = await response.json();
+    
+    if (!data.choices || !data.choices[0] || !data.choices[0].message || !data.choices[0].message.content) {
+      console.error('Invalid OpenAI API response structure');
+      // Again, fail gracefully
+      return { canBeAddressed: true, reason: 'Invalid API response, assuming valid topic' };
+    }
+    
+    // Parse the evaluation result
+    const evaluationContent = data.choices[0].message.content.trim();
+    let evaluation;
+    
+    try {
+      // Parse the JSON response
+      evaluation = JSON.parse(evaluationContent);
+    } catch (parseError) {
+      console.error('Failed to parse evaluation response:', parseError);
+      
+      // Try to extract JSON if it's wrapped in markdown or other text
+      const jsonMatch = evaluationContent.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        try {
+          evaluation = JSON.parse(jsonMatch[0]);
+        } catch (e) {
+          console.error('Failed to extract JSON from response');
+          // If parsing fails, assume the topic is valid
+          return { canBeAddressed: true, reason: 'Response parsing error, assuming valid topic' };
+        }
+      } else {
+        // If no JSON found, assume the topic is valid
+        return { canBeAddressed: true, reason: 'No JSON found in response, assuming valid topic' };
+      }
+    }
+    
+    console.log(`Topic evaluation result for "${topic}": ${evaluation.canBeAddressed ? 'Can be addressed' : 'Cannot be addressed'}`);
+    return evaluation;
+    
+  } catch (error) {
+    console.error('Topic evaluation error:', error);
+    // In case of any error, allow the topic but log it
+    return { canBeAddressed: true, reason: 'Error in evaluation process, assuming valid topic' };
+  }
 }
 
 exports.handler = async function(event, context) {
@@ -142,6 +277,24 @@ exports.handler = async function(event, context) {
       
       // Sanitize topic
       const sanitizedTopic = sanitizeInput(body.topic);
+      
+      // Use AI to evaluate if the topic can be addressed from a biblical perspective
+      const evaluation = await evaluateTopicWithAI(sanitizedTopic);
+      
+      if (!evaluation.canBeAddressed) {
+        console.log(`Rejecting non-Bible related topic: "${sanitizedTopic}", Reason: ${evaluation.reason}`);
+        return {
+          statusCode: 200, // Using 200 instead of 400 for better client handling
+          headers: {
+            ...headers,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            notBibleRelated: true,
+            message: "I'm happy to help you with Bible-related topics, daily devotions, and Christian reflections. This topic doesn't appear to have a strong connection to biblical teachings or principles. If you'd like, you can ask about scriptures, biblical characters, Christian living, or how the Bible might provide guidance for specific life situations."
+          })
+        };
+      }
       
       // Validate and sanitize verses
       const validatedVerses = validateVerses(body.verses);
@@ -475,4 +628,158 @@ End with a meaningful prayer related to this topic.`
       };
     }
   }
+}
+
+// Bible topic validation
+function isBibleRelatedTopic(query) {
+  // Convert query to lowercase for case-insensitive matching
+  const lowerQuery = query.toLowerCase().trim();
+  
+  // If query is too short, it might not be specific enough
+  if (lowerQuery.length < 2) return false;
+  
+  // List of Bible-related keywords (books, characters, themes, concepts)
+  const bibleBooks = [
+    'genesis', 'exodus', 'leviticus', 'numbers', 'deuteronomy', 'joshua', 'judges', 'ruth',
+    'samuel', 'kings', 'chronicles', 'ezra', 'nehemiah', 'esther', 'job', 'psalm', 'psalms',
+    'proverbs', 'ecclesiastes', 'song of solomon', 'isaiah', 'jeremiah', 'lamentations',
+    'ezekiel', 'daniel', 'hosea', 'joel', 'amos', 'obadiah', 'jonah', 'micah', 'nahum',
+    'habakkuk', 'zephaniah', 'haggai', 'zechariah', 'malachi', 'matthew', 'mark', 'luke',
+    'john', 'acts', 'romans', 'corinthians', 'galatians', 'ephesians', 'philippians',
+    'colossians', 'thessalonians', 'timothy', 'titus', 'philemon', 'hebrews', 'james',
+    'peter', 'jude', 'revelation'
+  ];
+  
+  const bibleCharacters = [
+    'jesus', 'christ', 'god', 'holy spirit', 'moses', 'abraham', 'isaac', 'jacob', 'joseph',
+    'david', 'solomon', 'saul', 'paul', 'peter', 'mary', 'john', 'adam', 'eve', 'noah',
+    'daniel', 'elijah', 'elisha', 'samson', 'delilah', 'goliath', 'joshua', 'rahab', 'ruth',
+    'esther', 'job', 'jonah', 'jeremiah', 'isaiah', 'ezekiel', 'matthew', 'mark', 'luke',
+    'john', 'timothy', 'titus', 'james', 'jude', 'sarah', 'rebekah', 'rachel', 'leah',
+    'aaron', 'miriam', 'joshua', 'deborah', 'gideon', 'samuel', 'bathsheba', 'absalom',
+    'martha', 'lazarus', 'nicodemus', 'thomas', 'judas', 'pilate', 'herod', 'cain', 'abel'
+  ];
+  
+  const bibleThemes = [
+    'salvation', 'faith', 'hope', 'love', 'sin', 'redemption', 'grace', 'forgiveness',
+    'righteousness', 'holiness', 'prayer', 'worship', 'fellowship', 'gospel', 'repentance',
+    'baptism', 'communion', 'lord\'s supper', 'crucifixion', 'resurrection', 'ascension',
+    'second coming', 'judgment', 'heaven', 'hell', 'kingdom of god', 'church', 'discipleship',
+    'evangelism', 'mission', 'ministry', 'prophecy', 'covenant', 'law', 'commandments',
+    'blessing', 'curse', 'sacrifice', 'atonement', 'justification', 'sanctification',
+    'glorification', 'wisdom', 'creation', 'fall', 'flood', 'exodus', 'promised land',
+    'exile', 'return', 'incarnation', 'trinity', 'peace', 'joy', 'patience', 'kindness',
+    'goodness', 'faithfulness', 'gentleness', 'self-control', 'mercy', 'justice'
+  ];
+  
+  // Additional Bible-specific terms
+  const bibleSpecificTerms = [
+    'bible', 'scripture', 'verse', 'chapter', 'testament', 'gospel', 'epistle', 
+    'prophet', 'apostle', 'disciple', 'messiah', 'christ', 'christian', 'church',
+    'biblical', 'theology', 'sermon', 'parable', 'devotion', 'devotional', 'worship',
+    'prayer', 'pray', 'spiritual', 'lord', 'tabernacle', 'temple', 'priest', 'levite',
+    'pharisee', 'sadducee', 'sanhedrin', 'synagogue', 'sabbath', 'passover', 'pentecost'
+  ];
+
+  // List of explicitly non-biblical keywords that should be rejected
+  const nonBiblicalKeywords = [
+    'porn', 'sex', 'nude', 'bitcoin', 'invest', 'cryptocurrency', 'casino', 'gambling',
+    'lottery', 'hack', 'cheat', 'drugs', 'marijuana', 'cocaine', 'heroin',
+    'nazi', 'hitler', 'terrorism', 'bomb', 'weapon', 'gun', 'rifle', 'pistol', 'missile',
+    'democrat', 'republican', 'trump', 'biden', 'obama', 'clinton', 'bush', 'reagan',
+    'xbox', 'playstation', 'nintendo', 'fortnite', 'minecraft', 'roblox'
+  ];
+
+  // Check for explicit non-biblical keywords first (reject these immediately)
+  for (const term of nonBiblicalKeywords) {
+    // Use word boundaries to prevent false positives
+    const regex = new RegExp(`\\b${term}\\b`, 'i');
+    if (regex.test(lowerQuery)) {
+      console.log(`Rejected query "${query}" due to non-biblical keyword: ${term}`);
+      return false;
+    }
+  }
+
+  // Check if query directly contains any Bible book names (very likely biblical)
+  for (const book of bibleBooks) {
+    // Use word boundaries to ensure we're matching whole words
+    const regex = new RegExp(`\\b${book}\\b`, 'i');
+    if (regex.test(lowerQuery)) {
+      return true;
+    }
+  }
+  
+  // Check if query directly contains any Bible character names (very likely biblical)
+  for (const character of bibleCharacters) {
+    // Use word boundaries for more accurate matching
+    const regex = new RegExp(`\\b${character}\\b`, 'i');
+    if (regex.test(lowerQuery)) {
+      return true;
+    }
+  }
+  
+  // Check against Bible themes
+  for (const theme of bibleThemes) {
+    // Use word boundaries for more accurate matching
+    const regex = new RegExp(`\\b${theme}\\b`, 'i');
+    if (regex.test(lowerQuery)) {
+      return true;
+    }
+  }
+  
+  // Check against Bible-specific terms
+  for (const term of bibleSpecificTerms) {
+    // Use word boundaries for more accurate matching
+    const regex = new RegExp(`\\b${term}\\b`, 'i');
+    if (regex.test(lowerQuery)) {
+      return true;
+    }
+  }
+
+  // Additional semantic checks for Bible-related phrases
+  // These check for patterns that suggest Bible-related questions
+  if (lowerQuery.includes('what does the bible say about')) return true;
+  if (lowerQuery.includes('biblical perspective on')) return true;
+  if (lowerQuery.includes('in the bible')) return true;
+  if (lowerQuery.includes('scripture about')) return true;
+  if (lowerQuery.includes('scriptures for')) return true;
+  if (lowerQuery.includes('god\'s word')) return true;
+  if (lowerQuery.includes('teaching of jesus')) return true;
+  if (lowerQuery.includes('christian view')) return true;
+  if (lowerQuery.includes('passage about')) return true;
+  if (lowerQuery.includes('meaning of') && (lowerQuery.includes('verse') || lowerQuery.includes('passage'))) return true;
+  if (lowerQuery.includes('interpretation of') && (lowerQuery.includes('verse') || lowerQuery.includes('passage'))) return true;
+  if (lowerQuery.includes('how to pray')) return true;
+  if (lowerQuery.includes('godly') || lowerQuery.includes('ungodly')) return true;
+  if (lowerQuery.includes('daily devotional')) return true;
+  if (lowerQuery.includes('what would jesus do')) return true;
+  
+  // Common Christian topics that might not be explicitly mentioned in our lists
+  if (/\b(baptism|confession|repent|fast(ing)?|holy|communion|eucharist|tithe)\b/i.test(lowerQuery)) return true;
+  if (/\b(sermon|parable|teaching|healing|miracle|sin(s)?|repent)\b/i.test(lowerQuery)) return true;
+  if (/\b(worship|praise|thanksgiving|witness|ministry|pastor|church|temple)\b/i.test(lowerQuery)) return true;
+  if (/\b(heaven|hell|salvation|eternal life|kingdom of god|kingdom of heaven)\b/i.test(lowerQuery)) return true;
+  
+  // Topics related to Christian theology
+  const theologicalTerms = ["trinity", "incarnation", "atonement", "redemption", "justification", 
+                           "sanctification", "predestination", "election", "calling", "salvation",
+                           "rapture", "tribulation", "millennium", "dispensation", "covenant",
+                           "reformed", "calvinist", "arminian", "catholic", "orthodox", "protestant"];
+  
+  for (const term of theologicalTerms) {
+    if (lowerQuery.includes(term)) return true;
+  }
+  
+  // If the query contains words with spiritual connotations, accept it
+  const spiritualTerms = ["soul", "spirit", "divine", "sacred", "holy", "blessed", 
+                          "faithful", "righteous", "sinful", "wicked", "evil",
+                          "prayer", "worship", "praise", "blessing"];
+                          
+  for (const term of spiritualTerms) {
+    if (lowerQuery.includes(term)) return true;
+  }
+  
+  // If we're here, the query doesn't match any of our Bible-related patterns
+  console.log(`Rejected query "${query}" as not Bible-related`);
+  return false;
 }
